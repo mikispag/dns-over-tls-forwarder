@@ -1,0 +1,16 @@
+[Unit]
+Description=DNS-over-TLS forwarder
+After=network.target
+
+[Service]
+User=nobody
+Group=nogroup
+LimitNOFILE=32768
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/dns-over-tls-forwarder
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
