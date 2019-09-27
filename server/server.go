@@ -13,12 +13,16 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const cacheSize = 65536
+const (
+	cacheSize        = 65536
+	refreshQueueSize = 2048
+)
 
 type Server struct {
 	upstreamServer string
 	cache          *cache.Cache
 	p              *pool
+	rq             chan *dns.Msg
 }
 
 func New(upstreamServer string) *Server {
@@ -36,13 +40,13 @@ func New(upstreamServer string) *Server {
 	return s
 }
 
-func (s *Server) Run(ctx context.Context) error {
+func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := dns.NewServeMux()
 	mux.Handle(".", s)
 
 	servers := []dns.Server{
-		{Addr: ":53", Net: "tcp", Handler: mux},
-		{Addr: ":53", Net: "udp", Handler: mux},
+		{Addr: addr, Net: "tcp", Handler: mux},
+		{Addr: addr, Net: "udp", Handler: mux},
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -54,6 +58,9 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		s.p.shutdown()
 	}()
+
+	s.rq = make(chan *dns.Msg, refreshQueueSize)
+	go s.refresher(ctx)
 
 	for _, s := range servers {
 		s := s
@@ -84,11 +91,29 @@ func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
 	}
 	// If there is a cache HIT with an expired TTL, speculatively return the cache entry anyway with a short TTL, and refresh it.
 	if !ok && m != nil {
-		go s.forwardMessageAndCacheResponse(q)
+		s.refresh(q)
 		return m
 	}
 	// If there is a cache MISS, forward the message upstream and return the answer.
 	return s.forwardMessageAndCacheResponse(q)
+}
+
+func (s *Server) refresh(q *dns.Msg) {
+	select {
+	case s.rq <- q:
+	default:
+	}
+}
+
+func (s *Server) refresher(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case q := <-s.rq:
+			s.forwardMessageAndCacheResponse(q)
+		}
+	}
 }
 
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
