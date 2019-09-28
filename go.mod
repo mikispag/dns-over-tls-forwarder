@@ -6,7 +6,7 @@ require (
 	github.com/alexanderGugel/arc v0.0.0-20150718181750-08b678af7529
 	github.com/konsorten/go-windows-terminal-sequences v1.0.2 // indirect
 	github.com/miekg/dns v1.1.19
-	github.com/sirupsen/logrus v1.4.2
+	github.com/sirupsen/logrus v1.4.3-0.20190807103436-de736cf91b92
 	github.com/stretchr/objx v0.2.0 // indirect
 	github.com/stretchr/testify v1.4.0 // indirect
 	golang.org/x/crypto v0.0.0-20190927123631-a832865fa7ad // indirect
