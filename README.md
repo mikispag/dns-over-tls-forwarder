@@ -3,12 +3,14 @@ A simple DNS-over-TLS forwarding server with adaptive caching written in Go.
 
 ## Usage
 ```
-  -l string
+  -a
+    	the address to listen on. If only port is needed prefix with : (default ":53")
+  -l
     	log file path
-  -s string
+  -s
     	upstream DNS-over-TLS server (examples: one.one.one.one:853@1.1.1.1 or dns.google:853@8.8.8.8 (default "one.one.one.one:853@1.1.1.1")
   -v	verbose mode
   ```
 ## Credits
 
-Thanks to [@empijei](https://github.com/empijei) for the great Go mentoring in style and with channels.
+Thanks to [@empijei](https://github.com/empijei) for the great Go mentoring in design and style and several contributions.
