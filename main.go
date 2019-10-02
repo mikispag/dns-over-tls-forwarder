@@ -13,10 +13,9 @@ import (
 const version = "1.0.0"
 
 var (
-	upstreamServer = flag.String("s", "one.one.one.one:853@1.1.1.1", "upstream DNS-over-TLS server (examples: one.one.one.one:853@1.1.1.1 or dns.google:853@8.8.8.8")
-	logPath        = flag.String("l", "", "log file path")
-	isLogVerbose   = flag.Bool("v", false, "verbose mode")
-	addr           = flag.String("a", ":53", "the address to listen on. If only port is needed prefix with `:`")
+	logPath      = flag.String("l", "", "log file path")
+	isLogVerbose = flag.Bool("v", false, "verbose mode")
+	addr         = flag.String("a", ":53", "the address to listen on. If only port is needed prefix with `:`")
 )
 
 func main() {
@@ -52,6 +51,6 @@ func main() {
 		<-sigs
 		cancel()
 	}()
-	server := server.New(*upstreamServer)
+	server := server.New()
 	log.Fatal(server.Run(ctx, *addr))
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/cache"
@@ -14,30 +15,75 @@ import (
 )
 
 const (
-	cacheSize        = 65536
-	refreshQueueSize = 2048
+	cacheSize         = 65536
+	connectionTimeout = 10 * time.Second
+	refreshQueueSize  = 2048
 )
 
 type Server struct {
-	upstreamServer string
 	cache          *cache.Cache
-	p              *pool
+	cloudFlarePool *pool
+	googlePool     *pool
 	rq             chan *dns.Msg
 }
 
-func New(upstreamServer string) *Server {
-	s := &Server{
-		upstreamServer: upstreamServer,
-		cache:          cache.New(cacheSize),
+func New() *Server {
+	return &Server{
+		cache: cache.New(cacheSize),
+		cloudFlarePool: newPool(5, func() (*dns.Conn, error) {
+			c, err := connectToUpstream("one.one.one.one:853@1.1.1.1")
+			if err != nil {
+				return nil, fmt.Errorf("Unable to connect to CloudFlare upstream: %v", err)
+			}
+			return &dns.Conn{Conn: c}, nil
+		}),
+		googlePool: newPool(5, func() (*dns.Conn, error) {
+			c, err := connectToUpstream("dns.google:853@8.8.8.8")
+			if err != nil {
+				return nil, fmt.Errorf("Unable to connect to Google upstream: %v", err)
+			}
+			return &dns.Conn{Conn: c}, nil
+		}),
+		rq: make(chan *dns.Msg, refreshQueueSize),
 	}
-	s.p = newPool(5, func() (*dns.Conn, error) {
-		c, err := s.connectToUpstream()
+}
+
+func connectToUpstream(upstreamServer string) (net.Conn, error) {
+	var tlsConf tls.Config
+	dialableAddress := upstreamServer
+	serverComponents := strings.Split(upstreamServer, "@")
+	if len(serverComponents) == 2 {
+		servername, port, err := net.SplitHostPort(serverComponents[0])
 		if err != nil {
-			return nil, fmt.Errorf("unable to connect to upstream: %v", err)
+			log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
+			return nil, err
 		}
-		return &dns.Conn{Conn: c, UDPSize: 65535}, nil
-	})
-	return s
+		tlsConf.ServerName = servername
+		dialableAddress = serverComponents[1] + ":" + port
+	}
+	conn, err := tls.Dial("tcp", dialableAddress, &tlsConf)
+	if err != nil {
+		log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
+		return nil, err
+	}
+	return conn, nil
+}
+
+func exchangeMessages(c *dns.Conn, q *dns.Msg, out chan *dns.Msg) {
+	if err := c.WriteMsg(q); err != nil {
+		log.Debugf("Send question message failed: %v", err)
+		out <- nil
+	}
+	m, err := c.ReadMsg()
+	if err != nil {
+		log.Debugf("Error while reading message: %v", err)
+		out <- nil
+	}
+	if m == nil {
+		log.Debug("Response message returned nil. Please check your query or DNS configuration")
+		out <- nil
+	}
+	out <- m
 }
 
 func (s *Server) Run(ctx context.Context, addr string) error {
@@ -56,10 +102,10 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		for _, s := range servers {
 			s.Shutdown()
 		}
-		s.p.shutdown()
+		s.cloudFlarePool.shutdown()
+		s.googlePool.shutdown()
 	}()
 
-	s.rq = make(chan *dns.Msg, refreshQueueSize)
 	go s.refresher(ctx)
 
 	for _, s := range servers {
@@ -130,51 +176,47 @@ func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 }
 
 func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
-	c, err := s.p.get()
-	if err != nil {
-		return nil
+	cloudFlareConn, errCloudFlare := s.cloudFlarePool.get()
+	if errCloudFlare != nil {
+		cloudFlareConn.Close()
+	} else {
+		cloudFlareConn.SetDeadline(time.Now().Add(connectionTimeout))
+	}
+	googleConn, errGoogle := s.googlePool.get()
+	if errGoogle != nil {
+		googleConn.Close()
+		if errCloudFlare != nil {
+			return nil
+		}
+	} else {
+		googleConn.SetDeadline(time.Now().Add(connectionTimeout))
 	}
 	defer func() {
 		if m == nil {
-			c.Close()
+			cloudFlareConn.Close()
+			googleConn.Close()
 			return
 		}
-		s.p.put(c)
+		if errCloudFlare != nil {
+			cloudFlareConn.Close()
+		} else {
+			s.cloudFlarePool.put(cloudFlareConn)
+		}
+		if errGoogle != nil {
+			googleConn.Close()
+		} else {
+			s.googlePool.put(googleConn)
+		}
 	}()
 
-	if err := c.WriteMsg(q); err != nil {
-		log.Warnf("Send question message failed: %v", err)
-		return nil
-	}
-	m, err = c.ReadMsg()
-	if err != nil {
-		log.Debugf("Error while reading message: %v", err)
-		return nil
-	}
-	if m == nil {
-		log.Debug("Response message returned nil. Please check your query or DNS configuration")
-		return nil
-	}
-	return m
-}
+	// Race between CloudFlare and Google upstream servers.
+	msgChan := make(chan *dns.Msg, 2)
+	go exchangeMessages(cloudFlareConn, q, msgChan)
+	go exchangeMessages(googleConn, q, msgChan)
 
-func (s *Server) connectToUpstream() (net.Conn, error) {
-	var tlsConf tls.Config
-	dialableAddress := s.upstreamServer
-	serverComponents := strings.Split(s.upstreamServer, "@")
-	if len(serverComponents) == 2 {
-		servername, port, err := net.SplitHostPort(serverComponents[0])
-		if err != nil {
-			log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
-			return nil, err
-		}
-		tlsConf.ServerName = servername
-		dialableAddress = serverComponents[1] + ":" + port
+	m = <-msgChan
+	if m != nil {
+		return m
 	}
-	conn, err := tls.Dial("tcp", dialableAddress, &tlsConf)
-	if err != nil {
-		log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
-		return nil, err
-	}
-	return conn, nil
+	return <-msgChan
 }
