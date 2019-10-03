@@ -1,26 +1,36 @@
 package server
 
 import (
+	"errors"
+	"sync"
+
 	"github.com/miekg/dns"
 )
 
 type connector func() (*dns.Conn, error)
 
 type pool struct {
-	buf  chan *dns.Conn
-	c    connector
-	done chan struct{}
+	c connector
+
+	mu     sync.RWMutex
+	closed bool
+	buf    chan *dns.Conn
 }
 
 func newPool(size int, c connector) *pool {
 	return &pool{
-		buf:  make(chan *dns.Conn, size),
-		c:    c,
-		done: make(chan struct{}),
+		buf: make(chan *dns.Conn, size),
+		c:   c,
 	}
 }
 
-func (p pool) get() (*dns.Conn, error) {
+func (p *pool) get() (*dns.Conn, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return nil, errors.New("pool is shut down")
+	}
+
 	select {
 	case c := <-p.buf:
 		return c, nil
@@ -29,7 +39,13 @@ func (p pool) get() (*dns.Conn, error) {
 	}
 }
 
-func (p pool) put(c *dns.Conn) {
+func (p *pool) put(c *dns.Conn) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return
+	}
+
 	select {
 	case p.buf <- c:
 	default:
@@ -37,8 +53,11 @@ func (p pool) put(c *dns.Conn) {
 	}
 }
 
-// shutdown is not safe for concurrent use with put
-func (p pool) shutdown() {
+func (p *pool) shutdown() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+
 	close(p.buf)
 	for c := range p.buf {
 		c.Close()
