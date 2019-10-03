@@ -21,29 +21,27 @@ const (
 )
 
 type Server struct {
-	cache          *cache.Cache
-	cloudFlarePool *pool
-	googlePool     *pool
-	rq             chan *dns.Msg
+	cache *cache.Cache
+	pools []*pool
+	rq    chan *dns.Msg
 }
 
 func New() *Server {
-	return &Server{
-		cache: cache.New(cacheSize),
-		cloudFlarePool: newPool(5, func() (*dns.Conn, error) {
-			c, err := connectToUpstream("one.one.one.one:853@1.1.1.1")
+	connector := func(remote string) func() (*dns.Conn, error) {
+		return func() (*dns.Conn, error) {
+			c, err := connectToUpstream(remote)
 			if err != nil {
 				return nil, fmt.Errorf("Unable to connect to CloudFlare upstream: %v", err)
 			}
 			return &dns.Conn{Conn: c}, nil
-		}),
-		googlePool: newPool(5, func() (*dns.Conn, error) {
-			c, err := connectToUpstream("dns.google:853@8.8.8.8")
-			if err != nil {
-				return nil, fmt.Errorf("Unable to connect to Google upstream: %v", err)
-			}
-			return &dns.Conn{Conn: c}, nil
-		}),
+		}
+	}
+	return &Server{
+		cache: cache.New(cacheSize),
+		pools: []*pool{
+			newPool(5, connector("one.one.one.one:853@1.1.1.1")),
+			newPool(5, connector("dns.google:853@8.8.8.8")),
+		},
 		rq: make(chan *dns.Msg, refreshQueueSize),
 	}
 }
@@ -69,23 +67,6 @@ func connectToUpstream(upstreamServer string) (net.Conn, error) {
 	return conn, nil
 }
 
-func exchangeMessages(c *dns.Conn, q *dns.Msg, out chan *dns.Msg) {
-	if err := c.WriteMsg(q); err != nil {
-		log.Debugf("Send question message failed: %v", err)
-		out <- nil
-	}
-	m, err := c.ReadMsg()
-	if err != nil {
-		log.Debugf("Error while reading message: %v", err)
-		out <- nil
-	}
-	if m == nil {
-		log.Debug("Response message returned nil. Please check your query or DNS configuration")
-		out <- nil
-	}
-	out <- m
-}
-
 func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := dns.NewServeMux()
 	mux.Handle(".", s)
@@ -102,8 +83,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		for _, s := range servers {
 			s.Shutdown()
 		}
-		s.cloudFlarePool.shutdown()
-		s.googlePool.shutdown()
+		for _, p := range s.pools {
+			p.shutdown()
+		}
 	}()
 
 	go s.refresher(ctx)
@@ -141,7 +123,8 @@ func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
 		return m
 	}
 	// If there is a cache MISS, forward the message upstream and return the answer.
-	return s.forwardMessageAndCacheResponse(q)
+	// miek/dns does not pass a context so we fallback to Background.
+	return s.forwardMessageAndCacheResponse(context.Background(), q)
 }
 
 func (s *Server) refresh(q *dns.Msg) {
@@ -157,16 +140,16 @@ func (s *Server) refresher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case q := <-s.rq:
-			s.forwardMessageAndCacheResponse(q)
+			s.forwardMessageAndCacheResponse(ctx, q)
 		}
 	}
 }
 
-func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
-	m = s.forwardMessageAndGetResponse(q)
+func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
+	m = s.forwardMessageAndGetResponse(ctx, q)
 	// Let's try a couple of times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < 2; c++ {
-		m = s.forwardMessageAndGetResponse(q)
+		m = s.forwardMessageAndGetResponse(ctx, q)
 	}
 	if m == nil {
 		return nil
@@ -175,48 +158,58 @@ func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	return m
 }
 
-func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
-	cloudFlareConn, errCloudFlare := s.cloudFlarePool.get()
-	if errCloudFlare != nil {
-		cloudFlareConn.Close()
-	} else {
-		cloudFlareConn.SetDeadline(time.Now().Add(connectionTimeout))
+func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(connectionTimeout))
+	// This causes all concurrent connections to terminate early if we have a response already.
+	defer cancel()
+	resps := make(chan *dns.Msg, len(s.pools))
+	for _, p := range s.pools {
+		go func(p *pool) {
+			r, err := exchangeMessages(ctx, p, q)
+			if err != nil || r == nil {
+				resps <- nil
+			}
+			resps <- r
+		}(p)
 	}
-	googleConn, errGoogle := s.googlePool.get()
-	if errGoogle != nil {
-		googleConn.Close()
-		if errCloudFlare != nil {
-			return nil
+	for c := 0; c < len(s.pools); c++ {
+		if r := <-resps; r != nil {
+			return r
 		}
-	} else {
-		googleConn.SetDeadline(time.Now().Add(connectionTimeout))
 	}
+	return nil
+}
+
+func exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+	c, err := p.get()
+	if err != nil {
+		return nil, err
+	}
+	c.SetDeadline(time.Now().Add(connectionTimeout))
 	defer func() {
-		if m == nil {
-			cloudFlareConn.Close()
-			googleConn.Close()
+		if resp == nil || err != nil {
+			c.Close()
 			return
 		}
-		if errCloudFlare != nil {
-			cloudFlareConn.Close()
-		} else {
-			s.cloudFlarePool.put(cloudFlareConn)
-		}
-		if errGoogle != nil {
-			googleConn.Close()
-		} else {
-			s.googlePool.put(googleConn)
-		}
+		p.put(c)
 	}()
-
-	// Race between CloudFlare and Google upstream servers.
-	msgChan := make(chan *dns.Msg, 2)
-	go exchangeMessages(cloudFlareConn, q, msgChan)
-	go exchangeMessages(googleConn, q, msgChan)
-
-	m = <-msgChan
-	if m != nil {
-		return m
+	go func() {
+		<-ctx.Done()
+		// Our work is not needed anymore, abort all I/O.
+		c.SetDeadline(time.Now())
+	}()
+	if err := c.WriteMsg(q); err != nil {
+		log.Debugf("Send question message failed: %v", err)
+		return nil, err
 	}
-	return <-msgChan
+	resp, err = c.ReadMsg()
+	if err != nil {
+		log.Debugf("Error while reading message: %v", err)
+		return nil, err
+	}
+	if resp == nil {
+		log.Debug("Response message returned nil. Please check your query or DNS configuration")
+		return nil, err
+	}
+	return resp, err
 }
