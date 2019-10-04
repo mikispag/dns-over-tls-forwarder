@@ -28,8 +28,8 @@ type Server struct {
 
 // New constructs a new server but does not start it, use Run to start it afterwards.
 // Calling New(0) is valid and comes with working defaults:
-// * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
-// * If no remotes are specified default ones will be used.
+// * If cacheSize is 0 a default cache size will be used. To disable caches use a negative value.
+// * If no upstream servers are specified default ones will be used.
 func New(cacheSize int, remotes ...string) *Server {
 	switch {
 	case cacheSize == 0:
