@@ -51,6 +51,7 @@ func main() {
 		<-sigs
 		cancel()
 	}()
+	// Run the server with a default cache size.
 	server := server.New(0)
 	log.Fatal(server.Run(ctx, *addr))
 }
