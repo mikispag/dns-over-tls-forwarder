@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -24,47 +23,51 @@ type Server struct {
 	cache *cache.Cache
 	pools []*pool
 	rq    chan *dns.Msg
+	dial  func(addr string, cfg *tls.Config) (net.Conn, error)
 }
 
-func New() *Server {
-	connector := func(remote string) func() (*dns.Conn, error) {
-		return func() (*dns.Conn, error) {
-			c, err := connectToUpstream(remote)
-			if err != nil {
-				return nil, fmt.Errorf("Unable to connect to CloudFlare upstream: %v", err)
-			}
-			return &dns.Conn{Conn: c}, nil
+func New(remotes ...string) *Server {
+	s := &Server{
+		cache: cache.New(cacheSize),
+		rq:    make(chan *dns.Msg, refreshQueueSize),
+		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
+			return tls.Dial("tcp", addr, cfg)
+		},
+	}
+	if len(remotes) == 0 {
+		s.pools = []*pool{
+			newPool(5, s.connector("one.one.one.one:853@1.1.1.1")),
+			newPool(5, s.connector("dns.google:853@8.8.8.8")),
+		}
+	} else {
+		for _, addr := range remotes {
+			s.pools = append(s.pools, newPool(5, s.connector(addr)))
 		}
 	}
-	return &Server{
-		cache: cache.New(cacheSize),
-		pools: []*pool{
-			newPool(5, connector("one.one.one.one:853@1.1.1.1")),
-			newPool(5, connector("dns.google:853@8.8.8.8")),
-		},
-		rq: make(chan *dns.Msg, refreshQueueSize),
-	}
+	return s
 }
 
-func connectToUpstream(upstreamServer string) (net.Conn, error) {
-	var tlsConf tls.Config
-	dialableAddress := upstreamServer
-	serverComponents := strings.Split(upstreamServer, "@")
-	if len(serverComponents) == 2 {
-		servername, port, err := net.SplitHostPort(serverComponents[0])
+func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
+	return func() (*dns.Conn, error) {
+		var tlsConf tls.Config
+		dialableAddress := upstreamServer
+		serverComponents := strings.Split(upstreamServer, "@")
+		if len(serverComponents) == 2 {
+			servername, port, err := net.SplitHostPort(serverComponents[0])
+			if err != nil {
+				log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
+				return nil, err
+			}
+			tlsConf.ServerName = servername
+			dialableAddress = serverComponents[1] + ":" + port
+		}
+		conn, err := s.dial(dialableAddress, &tlsConf)
 		if err != nil {
-			log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
+			log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
 			return nil, err
 		}
-		tlsConf.ServerName = servername
-		dialableAddress = serverComponents[1] + ":" + port
+		return &dns.Conn{Conn: conn}, nil
 	}
-	conn, err := tls.Dial("tcp", dialableAddress, &tlsConf)
-	if err != nil {
-		log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
-		return nil, err
-	}
-	return conn, nil
 }
 
 func (s *Server) Run(ctx context.Context, addr string) error {
