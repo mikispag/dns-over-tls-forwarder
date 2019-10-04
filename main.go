@@ -15,7 +15,7 @@ const version = "1.0.0"
 var (
 	logPath      = flag.String("l", "", "log file path")
 	isLogVerbose = flag.Bool("v", false, "verbose mode")
-	addr         = flag.String("a", ":53", "the address to listen on. If only port is needed prefix with `:`")
+	addr         = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
 )
 
 func main() {

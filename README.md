@@ -9,7 +9,7 @@ The server forwards to both CloudFlare DNS-over-TLS server (`one.one.one.one:853
 ## Usage
 ```
   -a
-    	the address to listen on. If only port is needed prefix with : (default ":53")
+    	the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53` (default ":53")
   -l
     	log file path
   -v	verbose mode
