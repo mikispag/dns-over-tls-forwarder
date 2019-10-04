@@ -20,10 +20,18 @@ type CacheValue struct {
 }
 
 func New(size int) *Cache {
+	if size == 0 {
+		return nil
+	}
+
 	return &Cache{c: arc.New(size)}
 }
 
 func (c *Cache) Get(mk *dns.Msg) (*dns.Msg, bool) {
+	if c == nil {
+		return nil, false
+	}
+
 	k := key(mk)
 	r, ok := c.c.Get(k)
 	if !ok || r == nil {
@@ -52,6 +60,10 @@ func (c *Cache) Get(mk *dns.Msg) (*dns.Msg, bool) {
 }
 
 func (c *Cache) Put(k *dns.Msg, v *dns.Msg) {
+	if c == nil {
+		return
+	}
+
 	now := time.Now().UTC()
 	minExpirationTime := now.Add(maxTTL)
 	// Do not cache negative results.

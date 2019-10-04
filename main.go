@@ -51,6 +51,6 @@ func main() {
 		<-sigs
 		cancel()
 	}()
-	server := server.New()
+	server := server.New(0)
 	log.Fatal(server.Run(ctx, *addr))
 }

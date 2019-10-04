@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	cacheSize         = 65536
+	defaultCacheSize  = 65536
 	connectionTimeout = 10 * time.Second
 	refreshQueueSize  = 2048
 )
@@ -26,7 +26,17 @@ type Server struct {
 	dial  func(addr string, cfg *tls.Config) (net.Conn, error)
 }
 
-func New(remotes ...string) *Server {
+// New constructs a new server but does not start it, use Run to start it afterwards.
+// Calling New(0) is valid and comes with working defaults:
+// * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
+// * If no remotes are specified default ones will be used.
+func New(cacheSize int, remotes ...string) *Server {
+	switch {
+	case cacheSize == 0:
+		cacheSize = defaultCacheSize
+	case cacheSize < 0:
+		cacheSize = 0
+	}
 	s := &Server{
 		cache: cache.New(cacheSize),
 		rq:    make(chan *dns.Msg, refreshQueueSize),
@@ -70,6 +80,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 	}
 }
 
+// Run runs the server. The server will gracefully shutdown when context is canceled.
 func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := dns.NewServeMux()
 	mux.Handle(".", s)
