@@ -1,4 +1,4 @@
-package server
+package proxy
 
 import (
 	"context"
@@ -63,7 +63,7 @@ func (f fakeListener) dialer() func(addr string, c *tls.Config) (net.Conn, error
 func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) string) (exchanger func(logPrefix string), cleanup func()) {
 	tb.Helper()
 	const (
-		raddr    = "gopher.empijei:853"
+		raddr    = "gopher.empijei:53"
 		laddr    = "127.0.0.1:5678"
 		question = "raccoon.miki."
 		ip       = "42.42.42.42"
@@ -98,7 +98,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	go rems.ActivateAndServe()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := New(cacheSize, raddr)
+	srv := NewServer(cacheSize, raddr)
 	srv.dial = flst.dialer()
 	go srv.Run(ctx, laddr)
 	// TODO find a way to report the server has started

@@ -1,4 +1,4 @@
-package cache
+package proxy
 
 import (
 	"time"
@@ -10,24 +10,24 @@ import (
 
 const maxTTL = time.Duration(24) * time.Hour
 
-type Cache struct {
+type cache struct {
 	c *arc.ARC
 }
 
-type CacheValue struct {
+type cacheValue struct {
 	m   dns.Msg
 	exp time.Time
 }
 
-func New(size int) *Cache {
+func newCache(size int) *cache {
 	if size == 0 {
 		return nil
 	}
 
-	return &Cache{c: arc.New(size)}
+	return &cache{c: arc.New(size)}
 }
 
-func (c *Cache) Get(mk *dns.Msg) (*dns.Msg, bool) {
+func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 	if c == nil {
 		return nil, false
 	}
@@ -38,7 +38,7 @@ func (c *Cache) Get(mk *dns.Msg) (*dns.Msg, bool) {
 		log.Debugf("[CACHE] MISS %v", k)
 		return nil, false
 	}
-	v := r.(CacheValue)
+	v := r.(cacheValue)
 	mv := v.m.Copy()
 	// Rewrite the answer ID to match the question ID.
 	mv.Id = mk.Id
@@ -59,7 +59,7 @@ func (c *Cache) Get(mk *dns.Msg) (*dns.Msg, bool) {
 	return mv, true
 }
 
-func (c *Cache) Put(k *dns.Msg, v *dns.Msg) {
+func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	if c == nil {
 		return
 	}
@@ -83,7 +83,7 @@ func (c *Cache) Put(k *dns.Msg, v *dns.Msg) {
 	// Always compress on the wire.
 	cm.Compress = true
 
-	c.c.Put(key(k), CacheValue{m: *cm, exp: minExpirationTime})
+	c.c.Put(key(k), cacheValue{m: *cm, exp: minExpirationTime})
 }
 
 func key(k *dns.Msg) string {

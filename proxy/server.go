@@ -1,4 +1,4 @@
-package server
+package proxy
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/mikispag/dns-over-tls-forwarder/cache"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -21,16 +20,17 @@ const (
 
 // Server is a caching dns proxy that upgrades DNS to DNS over TLS.
 type Server struct {
-	cache *cache.Cache
+	cache *cache
 	pools []*pool
 	rq    chan *dns.Msg
 	dial  func(addr string, cfg *tls.Config) (net.Conn, error)
 }
 
 // New constructs a new server but does not start it, use Run to start it afterwards.
-// * If cacheSize is 0 a default cache size will be used. To disable caches use a negative value.
-// * The list of upstream servers is mandatory.
-func New(cacheSize int, upstreamServers ...string) *Server {
+// Calling New(0) is valid and comes with working defaults:
+// * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
+// * If no remotes are specified default ones will be used.
+func NewServer(cacheSize int, remotes ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
@@ -38,16 +38,19 @@ func New(cacheSize int, upstreamServers ...string) *Server {
 		cacheSize = 0
 	}
 	s := &Server{
-		cache: cache.New(cacheSize),
+		cache: newCache(cacheSize),
 		rq:    make(chan *dns.Msg, refreshQueueSize),
 		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
 			return tls.Dial("tcp", addr, cfg)
 		},
 	}
-	if len(upstreamServers) == 0 {
-		log.Fatal("No upstream servers specified.")
+	if len(remotes) == 0 {
+		s.pools = []*pool{
+			newPool(5, s.connector("one.one.one.one:853@1.1.1.1")),
+			newPool(5, s.connector("dns.google:853@8.8.8.8")),
+		}
 	} else {
-		for _, addr := range upstreamServers {
+		for _, addr := range remotes {
 			s.pools = append(s.pools, newPool(5, s.connector(addr)))
 		}
 	}
@@ -124,7 +127,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 }
 
 func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
-	m, ok := s.cache.Get(q)
+	m, ok := s.cache.get(q)
 	// Cache HIT.
 	if ok {
 		return m
@@ -166,7 +169,7 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 	if m == nil {
 		return nil
 	}
-	s.cache.Put(q, m)
+	s.cache.put(q, m)
 	return m
 }
 
