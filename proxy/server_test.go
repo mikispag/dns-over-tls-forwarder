@@ -1,4 +1,4 @@
-package server
+package proxy
 
 import (
 	"context"
@@ -98,7 +98,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	go rems.ActivateAndServe()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := New(cacheSize, raddr)
+	srv := NewServer(cacheSize, raddr)
 	srv.dial = flst.dialer()
 	go srv.Run(ctx, laddr)
 	// TODO find a way to report the server has started

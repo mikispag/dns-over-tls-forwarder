@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mikispag/dns-over-tls-forwarder/server"
+	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -54,6 +54,6 @@ func main() {
 		cancel()
 	}()
 	// Run the server with a default cache size and the specified upstream servers.
-	server := server.New(0, strings.Split(*upstreamServers, ",")...)
+	server := proxy.NewServer(0, strings.Split(*upstreamServers, ",")...)
 	log.Fatal(server.Run(ctx, *addr))
 }
