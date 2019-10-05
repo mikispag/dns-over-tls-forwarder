@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/mikispag/dns-over-tls-forwarder/server"
 	log "github.com/sirupsen/logrus"
@@ -13,9 +14,10 @@ import (
 const version = "1.0.0"
 
 var (
-	logPath      = flag.String("l", "", "log file path")
-	isLogVerbose = flag.Bool("v", false, "verbose mode")
-	addr         = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
+	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
+	logPath         = flag.String("l", "", "log file path")
+	isLogVerbose    = flag.Bool("v", false, "verbose mode")
+	addr            = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
 )
 
 func main() {
@@ -51,7 +53,7 @@ func main() {
 		<-sigs
 		cancel()
 	}()
-	// Run the server with a default cache size.
-	server := server.New(0)
+	// Run the server with a default cache size and the specified upstream servers.
+	server := server.New(0, strings.Split(*upstreamServers, ",")...)
 	log.Fatal(server.Run(ctx, *addr))
 }

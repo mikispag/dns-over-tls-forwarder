@@ -63,7 +63,7 @@ func (f fakeListener) dialer() func(addr string, c *tls.Config) (net.Conn, error
 func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) string) (exchanger func(logPrefix string), cleanup func()) {
 	tb.Helper()
 	const (
-		raddr    = "gopher.empijei:53"
+		raddr    = "gopher.empijei:853"
 		laddr    = "127.0.0.1:5678"
 		question = "raccoon.miki."
 		ip       = "42.42.42.42"
