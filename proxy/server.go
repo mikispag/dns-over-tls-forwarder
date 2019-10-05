@@ -18,7 +18,7 @@ const (
 	refreshQueueSize  = 2048
 )
 
-// Server is a caching dns proxy that upgrades DNS to DNS over TLS.
+// Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
 type Server struct {
 	cache *cache
 	pools []*pool
