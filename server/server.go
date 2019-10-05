@@ -19,6 +19,7 @@ const (
 	refreshQueueSize  = 2048
 )
 
+// Server is a caching dns proxy that upgrades DNS to DNS over TLS.
 type Server struct {
 	cache *cache.Cache
 	pools []*pool
@@ -112,6 +113,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	return g.Wait()
 }
 
+// ServeDNS implements miekg/dns.Handler for Server.
 func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 	inboundIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 	log.Debugf("Question from %s: %q", inboundIP, q.Question[0])
