@@ -28,10 +28,9 @@ type Server struct {
 }
 
 // New constructs a new server but does not start it, use Run to start it afterwards.
-// Calling New(0) is valid and comes with working defaults:
-// * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
-// * If no remotes are specified default ones will be used.
-func New(cacheSize int, remotes ...string) *Server {
+// * If cacheSize is 0 a default cache size will be used. To disable caches use a negative value.
+// * The list of upstream servers is mandatory.
+func New(cacheSize int, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
@@ -45,13 +44,10 @@ func New(cacheSize int, remotes ...string) *Server {
 			return tls.Dial("tcp", addr, cfg)
 		},
 	}
-	if len(remotes) == 0 {
-		s.pools = []*pool{
-			newPool(5, s.connector("one.one.one.one:853@1.1.1.1")),
-			newPool(5, s.connector("dns.google:853@8.8.8.8")),
-		}
+	if len(upstreamServers) == 0 {
+		log.Fatal("No upstream servers specified.")
 	} else {
-		for _, addr := range remotes {
+		for _, addr := range upstreamServers {
 			s.pools = append(s.pools, newPool(5, s.connector(addr)))
 		}
 	}
