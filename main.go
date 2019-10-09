@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 
@@ -18,6 +21,7 @@ var (
 	logPath         = flag.String("l", "", "log file path")
 	isLogVerbose    = flag.Bool("v", false, "verbose mode")
 	addr            = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
+	ppr             = flag.Int("pprof", 0, "The port to use for pprof listenting. If 0 pprof will not be started. Pprof will listen on localhost.")
 )
 
 func main() {
@@ -42,6 +46,10 @@ func main() {
 		} else {
 			log.SetOutput(io.MultiWriter(lf, os.Stdout))
 		}
+	}
+
+	if *ppr != 0 {
+		go http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), nil)
 	}
 
 	log.Infof("DNS-over-TLS-Forwarder version %s", version)
