@@ -131,6 +131,43 @@ func TestCache(t *testing.T) {
 				{put, "foo5", "bar5"},
 			},
 		},
+		{
+			name: "evict from MFA to LRU",
+			size: 4,
+			ops: []testOp{
+				// Add "foo1" to LRU and make it a MFA candidate
+				{put, "foo1", "bar1"},
+				{get, "foo1", "bar1"},
+				{get, "foo1", "bar1"},
+
+				// Add "foo2" to LRU and make it a MFA candidate
+				{put, "foo2", "bar2"},
+				{get, "foo2", "bar2"},
+				{get, "foo2", "bar2"},
+				{get, "foo2", "bar2"},
+
+				// Add "foo3" to LRU, make it a MFA candidate, promote "foo1" to MFA
+				{put, "foo3", "bar3"},
+				{get, "foo3", "bar3"},
+				{get, "foo3", "bar3"},
+				{get, "foo3", "bar3"},
+				{get, "foo3", "bar3"},
+
+				// Add "foo4" to LRU, promote "foo2" to MFA.
+				{put, "foo4", "bar4"},
+
+				// Cache is now full.
+
+				// Add "foo5" to LRU, promote "foo3" to MFA, demote "foo1" to LRU, evict "foo4"
+				{put, "foo5", "bar5"},
+
+				{get, "foo1", "bar1"},
+				{get, "foo2", "bar2"},
+				{get, "foo3", "bar3"},
+				{get, "foo4", ""},
+				{put, "foo5", "bar5"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s size %d", tt.name, tt.size), func(t *testing.T) {

@@ -124,7 +124,7 @@ func (c *Cache) Put(k string, v Value) {
 	}
 	// No room in MFA.
 	// Check if the evicted item was accessed enough times to be promoted to MFA.
-	if c.mfa.peek().a < lruovf.a ||
+	if c.mfa.peek().a > lruovf.a ||
 		c.mfa.peek().a == lruovf.a && c.mfa.peek().t < lruovf.t {
 		printf("discard %q (p%d), keep %q (p%d)", lruovf.key, lruovf.a, c.mfa.peek().key, c.mfa.peek().a)
 		return
