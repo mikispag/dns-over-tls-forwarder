@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	defaultCacheSize  = 65536
-	connectionTimeout = 10 * time.Second
-	refreshQueueSize  = 2048
+	defaultCacheSize       = 65536
+	connectionTimeout      = 10 * time.Second
+	connectionsPerUpstream = 5
+	refreshQueueSize       = 2048
 )
 
 // resolutionms is the minimum amount of milliseconds that have to pass between two
@@ -46,8 +47,12 @@ func NewServer(cacheSize int, remotes ...string) *Server {
 	case cacheSize < 0:
 		cacheSize = 0
 	}
+	cache, err := newCache(cacheSize)
+	if err != nil {
+		log.Fatal("Unable to initialize the cache")
+	}
 	s := &Server{
-		cache: newCache(cacheSize),
+		cache: cache,
 		rq:    make(chan *dns.Msg, refreshQueueSize),
 		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
 			return tls.Dial("tcp", addr, cfg)
@@ -55,12 +60,12 @@ func NewServer(cacheSize int, remotes ...string) *Server {
 	}
 	if len(remotes) == 0 {
 		s.pools = []*pool{
-			newPool(5, s.connector("one.one.one.one:853@1.1.1.1")),
-			newPool(5, s.connector("dns.google:853@8.8.8.8")),
+			newPool(connectionsPerUpstream, s.connector("one.one.one.one:853@1.1.1.1")),
+			newPool(connectionsPerUpstream, s.connector("dns.google:853@8.8.8.8")),
 		}
 	} else {
 		for _, addr := range remotes {
-			s.pools = append(s.pools, newPool(5, s.connector(addr)))
+			s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
 		}
 	}
 	return s
@@ -243,7 +248,7 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 		p.put(c)
 	}()
 	/*
-			// This is temporarily removed as it is quite expensive.
+		// This is temporarily removed as it is quite expensive.
 		// We'll need to find a way to re-introduce this.
 
 			go func() {

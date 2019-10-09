@@ -3,15 +3,15 @@ package proxy
 import (
 	"time"
 
-	"github.com/alexanderGugel/arc"
 	"github.com/miekg/dns"
+	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 	log "github.com/sirupsen/logrus"
 )
 
 const maxTTL = time.Duration(24) * time.Hour
 
 type cache struct {
-	c *arc.ARC
+	c *specialized.Cache
 }
 
 type cacheValue struct {
@@ -19,12 +19,12 @@ type cacheValue struct {
 	exp time.Time
 }
 
-func newCache(size int) *cache {
-	if size == 0 {
-		return nil
+func newCache(size int) (*cache, error) {
+	c, err := specialized.NewCache(size)
+	if err != nil {
+		return nil, err
 	}
-
-	return &cache{c: arc.New(size)}
+	return &cache{c: c}, nil
 }
 
 func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
