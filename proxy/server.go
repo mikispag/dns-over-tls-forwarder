@@ -3,8 +3,10 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -18,12 +20,19 @@ const (
 	refreshQueueSize  = 2048
 )
 
+// resolutionms is the minimum amount of milliseconds that have to pass between two
+// requests of the current time are issued to the system.
+var resolutionms = 400
+
 // Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
 type Server struct {
 	cache *cache
 	pools []*pool
 	rq    chan *dns.Msg
 	dial  func(addr string, cfg *tls.Config) (net.Conn, error)
+
+	mu          sync.RWMutex
+	currentTime time.Time
 }
 
 // New constructs a new server but does not start it, use Run to start it afterwards.
@@ -103,6 +112,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	}()
 
 	go s.refresher(ctx)
+	go s.timer(ctx)
 
 	for _, s := range servers {
 		s := s
@@ -160,6 +170,28 @@ func (s *Server) refresher(ctx context.Context) {
 	}
 }
 
+func (s *Server) timer(ctx context.Context) {
+	t := time.NewTicker(time.Duration(resolutionms) * time.Millisecond)
+	for {
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case t := <-t.C:
+			s.mu.Lock()
+			s.currentTime = t
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *Server) now() time.Time {
+	s.mu.RLock()
+	t := s.currentTime
+	s.mu.RUnlock()
+	return t
+}
+
 func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(ctx, q)
 	// Let's try a couple of times if we can't resolve it at the first try.
@@ -174,13 +206,13 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 }
 
 func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
-	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(connectionTimeout))
+	ctx, cancel := context.WithDeadline(ctx, s.now().Add(connectionTimeout))
 	// This causes all concurrent connections to terminate early if we have a response already.
 	defer cancel()
 	resps := make(chan *dns.Msg, len(s.pools))
 	for _, p := range s.pools {
 		go func(p *pool) {
-			r, err := exchangeMessages(ctx, p, q)
+			r, err := s.exchangeMessages(ctx, p, q)
 			if err != nil || r == nil {
 				resps <- nil
 			}
@@ -195,24 +227,31 @@ func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (
 	return nil
 }
 
-func exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+var errNilResponse = errors.New("nil response from upstream")
+
+func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
 	c, err := p.get()
 	if err != nil {
 		return nil, err
 	}
-	c.SetDeadline(time.Now().Add(connectionTimeout))
+	c.SetDeadline(s.now().Add(connectionTimeout))
 	defer func() {
-		if resp == nil || err != nil {
+		if err != nil {
 			c.Close()
 			return
 		}
 		p.put(c)
 	}()
-	go func() {
-		<-ctx.Done()
-		// Our work is not needed anymore, abort all I/O.
-		c.SetDeadline(time.Now())
-	}()
+	/*
+			// This is temporarily removed as it is quite expensive.
+		// We'll need to find a way to re-introduce this.
+
+			go func() {
+				<-ctx.Done()
+				// Our work is not needed anymore, abort all I/O.
+				c.SetDeadline(s.now())
+			}()
+	*/
 	if err := c.WriteMsg(q); err != nil {
 		log.Debugf("Send question message failed: %v", err)
 		return nil, err
@@ -224,7 +263,7 @@ func exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, 
 	}
 	if resp == nil {
 		log.Debug("Response message returned nil. Please check your query or DNS configuration")
-		return nil, err
+		return nil, errNilResponse
 	}
 	return resp, err
 }

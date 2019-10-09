@@ -26,7 +26,7 @@ type Cache struct {
 }
 
 // compute max size at compile time since it depends on the target architecture
-const maxsize = (^uint(0) / 2)
+const maxsize = (^uint(0) >> 1)
 
 // NewCache constructs a new Cache ready for use.
 // The specified size should never be bigger or roughly as big as the maximum available value for uint.
@@ -130,6 +130,9 @@ func (c *Cache) Put(k string, v Value) {
 
 // Len returns the amount of items currently stored in the cache.
 func (c *Cache) Len() int {
+	if c == nil {
+		return 0
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lru.Len() + c.mfa.Len()
@@ -137,6 +140,9 @@ func (c *Cache) Len() int {
 
 // Cap returns the maximum amount of items the cache can hold.
 func (c *Cache) Cap() int {
+	if c == nil {
+		return 0
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lru.cap() + c.mfa.cap()
