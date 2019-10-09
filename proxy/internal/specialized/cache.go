@@ -70,19 +70,15 @@ func (c *Cache) Get(k string) (v Value, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	printf("\n %2d get %q", now, k)
 
 	if v, ok := c.mfa.get(now, k); ok {
 		// Hit on MFA
-		printf("MFA hit")
 		return v, true
 	}
 	if v, ok := c.lru.get(now, k); ok {
 		// Hit on LRU
-		printf("LRU hit")
 		return v, true
 	}
-	printf("miss")
 	return nil, false
 }
 
@@ -95,30 +91,24 @@ func (c *Cache) Put(k string, v Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	printf("\n %2d put %q", now, k)
 
 	if c.mfa.update(now, k, v) {
 		// Item was in MFA and was updated
-		printf("update MFA")
 		return
 	}
 	if c.lru.update(now, k, v) {
 		// Item was in LRU and was updated
-		printf("update LRU")
 		return
 	}
 	// Item was not in cache, put in LRU first
 	lruovf := c.lru.put(now, k, v, 1)
 	if lruovf.v == nil {
 		// LRU had room to accommodate the new entry
-		printf("LRU put(%q, %+v)", k, v)
 		return
 	}
-	printf("put LRU, evict (%q,%+v)", lruovf.key, lruovf.v)
 	// LRU popped out an item because of our push.
 	// Let's promote to MFA if there is room.
 	if c.mfa.Len() < c.mfa.cap() {
-		printf("MFA put(%q, %+v)", lruovf.key, lruovf.v)
 		c.mfa.put(now, lruovf.key, lruovf.v, lruovf.a)
 		return
 	}
@@ -126,19 +116,15 @@ func (c *Cache) Put(k string, v Value) {
 	// Check if the evicted item was accessed enough times to be promoted to MFA.
 	if c.mfa.peek().a > lruovf.a ||
 		c.mfa.peek().a == lruovf.a && c.mfa.peek().t < lruovf.t {
-		printf("discard %q (p%d), keep %q (p%d)", lruovf.key, lruovf.a, c.mfa.peek().key, c.mfa.peek().a)
 		return
 	}
-	printf("MFA put(%q, %+v)", lruovf.key, lruovf.v)
 	mfaovf := c.mfa.put(now, lruovf.key, lruovf.v, lruovf.a)
-	printf("put MFA, evict %+v", mfaovf)
 	// Pushing to MFA popped out an item. If the item was in MFA it means
 	// it is probably worth keeping around for a while longer.
 	// Reset access count and push it to LRU if it was accessed more than the
 	// last item in LRU, discard otherwise.
 	if c.lru.Len() > 0 && c.lru.peek().a < mfaovf.a {
 		c.lru.put(now, mfaovf.key, mfaovf.v, 1)
-		printf("LRU put(%q, %+v)", mfaovf.key, mfaovf.v)
 	}
 }
 
