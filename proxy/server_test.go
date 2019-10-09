@@ -14,6 +14,10 @@ import (
 	"github.com/miekg/dns"
 )
 
+func init() {
+	resolutionms = 1
+}
+
 type fakeServer func(w dns.ResponseWriter, q *dns.Msg)
 
 func (f fakeServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) { f(w, q) }
