@@ -21,9 +21,9 @@ const (
 	refreshQueueSize       = 2048
 )
 
-// resolutionms is the minimum amount of milliseconds that have to pass between two
-// requests of the current time are issued to the system.
-var resolutionms = 400
+// Minimum amount of milliseconds that have to pass between two
+// requests of the current time issued to the system.
+var resolutionMilliseconds = 500
 
 // Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
 type Server struct {
@@ -39,8 +39,8 @@ type Server struct {
 // New constructs a new server but does not start it, use Run to start it afterwards.
 // Calling New(0) is valid and comes with working defaults:
 // * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
-// * If no remotes are specified default ones will be used.
-func NewServer(cacheSize int, remotes ...string) *Server {
+// * If no upstream servers are specified default ones will be used.
+func NewServer(cacheSize int, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
@@ -58,13 +58,13 @@ func NewServer(cacheSize int, remotes ...string) *Server {
 			return tls.Dial("tcp", addr, cfg)
 		},
 	}
-	if len(remotes) == 0 {
+	if len(upstreamServers) == 0 {
 		s.pools = []*pool{
 			newPool(connectionsPerUpstream, s.connector("one.one.one.one:853@1.1.1.1")),
 			newPool(connectionsPerUpstream, s.connector("dns.google:853@8.8.8.8")),
 		}
 	} else {
-		for _, addr := range remotes {
+		for _, addr := range upstreamServers {
 			s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
 		}
 	}
@@ -157,7 +157,7 @@ func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
 	}
 	// If there is a cache MISS, forward the message upstream and return the answer.
 	// miek/dns does not pass a context so we fallback to Background.
-	return s.forwardMessageAndCacheResponse(context.Background(), q)
+	return s.forwardMessageAndCacheResponse(q)
 }
 
 func (s *Server) refresh(q *dns.Msg) {
@@ -173,13 +173,13 @@ func (s *Server) refresher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case q := <-s.rq:
-			s.forwardMessageAndCacheResponse(ctx, q)
+			s.forwardMessageAndCacheResponse(q)
 		}
 	}
 }
 
 func (s *Server) timer(ctx context.Context) {
-	t := time.NewTicker(time.Duration(resolutionms) * time.Millisecond)
+	t := time.NewTicker(time.Duration(resolutionMilliseconds) * time.Millisecond)
 	for {
 		select {
 		case <-ctx.Done():
@@ -200,11 +200,11 @@ func (s *Server) now() time.Time {
 	return t
 }
 
-func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
-	m = s.forwardMessageAndGetResponse(ctx, q)
+func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
+	m = s.forwardMessageAndGetResponse(q)
 	// Let's try a couple of times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < 2; c++ {
-		m = s.forwardMessageAndGetResponse(ctx, q)
+		m = s.forwardMessageAndGetResponse(q)
 	}
 	if m == nil {
 		return nil
@@ -213,14 +213,11 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 	return m
 }
 
-func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
-	ctx, cancel := context.WithDeadline(ctx, s.now().Add(connectionTimeout))
-	// This causes all concurrent connections to terminate early if we have a response already.
-	defer cancel()
+func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
 	resps := make(chan *dns.Msg, len(s.pools))
 	for _, p := range s.pools {
 		go func(p *pool) {
-			r, err := s.exchangeMessages(ctx, p, q)
+			r, err := s.exchangeMessages(p, q)
 			if err != nil || r == nil {
 				resps <- nil
 			}
@@ -237,7 +234,7 @@ func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (
 
 var errNilResponse = errors.New("nil response from upstream")
 
-func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
 	c, err := p.get()
 	if err != nil {
 		return nil, err
@@ -250,16 +247,6 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 		}
 		p.put(c)
 	}()
-	/*
-		// This is temporarily removed as it is quite expensive.
-		// We'll need to find a way to re-introduce this.
-
-			go func() {
-				<-ctx.Done()
-				// Our work is not needed anymore, abort all I/O.
-				c.SetDeadline(s.now())
-			}()
-	*/
 	if err := c.WriteMsg(q); err != nil {
 		log.Debugf("Send question message failed: %v", err)
 		return nil, err
