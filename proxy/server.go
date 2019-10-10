@@ -73,7 +73,10 @@ func NewServer(cacheSize int, remotes ...string) *Server {
 
 func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 	return func() (*dns.Conn, error) {
-		var tlsConf tls.Config
+		tlsConf := &tls.Config{
+			// Force TLS 1.2 as minimum version.
+			MinVersion: tls.VersionTLS12,
+		}
 		dialableAddress := upstreamServer
 		serverComponents := strings.Split(upstreamServer, "@")
 		if len(serverComponents) == 2 {
@@ -85,7 +88,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 			tlsConf.ServerName = servername
 			dialableAddress = serverComponents[1] + ":" + port
 		}
-		conn, err := s.dial(dialableAddress, &tlsConf)
+		conn, err := s.dial(dialableAddress, tlsConf)
 		if err != nil {
 			log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
 			return nil, err
