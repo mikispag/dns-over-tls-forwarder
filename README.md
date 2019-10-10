@@ -2,7 +2,7 @@
 
 [![Go Report](https://goreportcard.com/badge/github.com/mikispag/dns-over-tls-forwarder)](https://goreportcard.com/badge/github.com/mikispag/dns-over-tls-forwarder)
 
-A simple DNS-over-TLS forwarding server with adaptive caching written in Go.
+A simple, fast DNS-over-TLS forwarding server with hybrid LRU/MFA caching written in Go.
 
 The server forwards to an user-specified list of upstream DNS-over-TLS servers (by defeault, to both CloudFlare `one.one.one.one:853@1.1.1.1` and Google `dns.google:853@8.8.8.8`) in parallel, returning and caching the first result received.
 
