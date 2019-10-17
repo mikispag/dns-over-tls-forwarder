@@ -4,7 +4,18 @@
 
 A simple, fast DNS-over-TLS forwarding server with hybrid LRU/MFA caching written in Go.
 
-The server forwards to an user-specified list of upstream DNS-over-TLS servers (by defeault, to both CloudFlare `one.one.one.one:853@1.1.1.1` and Google `dns.google:853@8.8.8.8`) in parallel, returning and caching the first result received.
+The server forwards to an user-specified list of upstream DNS-over-TLS servers in parallel, returning and caching the first result received.
+
+## Upstream servers
+
+The default list of upstream servers is:
+- **CloudFlare** `one.one.one.one:853@1.1.1.1`
+- **Google** `dns.google:853@8.8.8.8`
+
+Other popular upstream servers known to support DNS-over-TLS are:
+- **Quad9** `dns.quad9.net:853@9.9.9.9`
+
+A custom comma-separated list of upstream servers can be specified with the `-s` command line flag.
 
 ## Usage
 ```console
