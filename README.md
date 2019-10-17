@@ -9,11 +9,11 @@ The server forwards to an user-specified list of upstream DNS-over-TLS servers i
 ## Upstream servers
 
 The default list of upstream servers is:
-- **CloudFlare** `one.one.one.one:853@1.1.1.1`
-- **Google** `dns.google:853@8.8.8.8`
+  - **CloudFlare** `one.one.one.one:853@1.1.1.1`
+  - **Google** `dns.google:853@8.8.8.8`
 
 Other popular upstream servers known to support DNS-over-TLS are:
-- **Quad9** `dns.quad9.net:853@9.9.9.9`
+  - **Quad9** `dns.quad9.net:853@9.9.9.9`
 
 A custom comma-separated list of upstream servers can be specified with the `-s` command line flag.
 
