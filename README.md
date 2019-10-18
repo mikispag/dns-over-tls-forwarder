@@ -13,7 +13,8 @@ The default list of upstream servers is:
   - **Google** `dns.google:853@8.8.8.8`
 
 Other popular upstream servers known to support DNS-over-TLS are:
-  - **Quad9** `dns.quad9.net:853@9.9.9.9`
+  - **Quad9 (filters malware)** `dns.quad9.net:853@9.9.9.9`
+  - **Quad9 (no filtering)** `dns10.quad9.net:853@9.9.9.10`
 
 A custom comma-separated list of upstream servers can be specified with the `-s` command line flag.
 
