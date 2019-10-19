@@ -94,15 +94,15 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 			m := &dns.Msg{}
 			m = m.SetReply(q)
 			m.Answer = []dns.RR{resp}
-			w.WriteMsg(m)
+			_ = w.WriteMsg(m)
 		}),
 	}
-	go rems.ActivateAndServe()
+	go func() { _ = rems.ActivateAndServe() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srv := NewServer(cacheSize, false, raddr)
 	srv.dial = flst.dialer()
-	go srv.Run(ctx, laddr)
+	go func() { _ = srv.Run(ctx, laddr) }()
 	// TODO find a way to report the server has started
 	time.Sleep(50 * time.Millisecond)
 

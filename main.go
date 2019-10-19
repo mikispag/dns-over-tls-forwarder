@@ -50,7 +50,7 @@ func main() {
 	}
 
 	if *ppr != 0 {
-		go http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), nil)
+		go log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), nil))
 	}
 
 	log.Infof("DNS-over-TLS-Forwarder version %s", version)

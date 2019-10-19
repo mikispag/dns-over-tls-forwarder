@@ -54,7 +54,7 @@ func NewCache(size int, evictMetrics bool) (*Cache, error) {
 	return &c, nil
 }
 
-// CurrentMetrics copies current metrics values and returns the snapshot.
+// Metrics copies current metrics values and returns the snapshot.
 // If the cache has size<=0 zero metrics will be returned.
 func (c *Cache) Metrics() Metrics {
 	if c == nil {
