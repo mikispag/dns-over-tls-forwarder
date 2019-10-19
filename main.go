@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	_ "net/http/pprof"
 	"os"
 	"strings"
@@ -49,10 +50,6 @@ func main() {
 		}
 	}
 
-	if *ppr != 0 {
-		go log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), nil))
-	}
-
 	log.Infof("DNS-over-TLS-Forwarder version %s", version)
 
 	sigs := make(chan os.Signal, 1)
@@ -64,5 +61,13 @@ func main() {
 	}()
 	// Run the server with a default cache size and the specified upstream servers.
 	server := proxy.NewServer(0, *evictMetrics, strings.Split(*upstreamServers, ",")...)
+
+	if *ppr != 0 {
+		mux := http.NewServeMux()
+		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		mux.Handle("/debug/server/", server.DebugHandler())
+		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
+	}
+
 	log.Fatal(server.Run(ctx, *addr))
 }

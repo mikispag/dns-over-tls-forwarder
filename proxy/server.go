@@ -3,13 +3,16 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -34,6 +37,7 @@ type Server struct {
 
 	mu          sync.RWMutex
 	currentTime time.Time
+	startTime   time.Time
 }
 
 // NewServer constructs a new server but does not start it, use Run to start it afterwards.
@@ -127,6 +131,8 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		g.Go(func() error { return s.ListenAndServe() })
 	}
 
+	s.startTime = time.Now()
+	log.Infof("DNS over TLS forwarder listening on %v", addr)
 	return g.Wait()
 }
 
@@ -142,6 +148,30 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 	if err := w.WriteMsg(m); err != nil {
 		log.Warnf("Write message failed, message: %v, error: %v", m, err)
 	}
+}
+
+type debugStats struct {
+	CacheMetrics       specialized.CacheMetrics
+	CacheLen, CacheCap int
+	Uptime             string
+}
+
+// DebugHandler returns an http.Handler that serves debug stats.
+func (s *Server) DebugHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		buf, err := json.MarshalIndent(debugStats{
+			s.cache.c.Metrics(),
+			s.cache.c.Len(),
+			s.cache.c.Cap(),
+			time.Since(s.startTime).String(),
+		}, "", " ")
+		if err != nil {
+			http.Error(w, "Unable to retrieve debug info", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(buf)
+	})
 }
 
 func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
@@ -239,7 +269,7 @@ func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error
 	if err != nil {
 		return nil, err
 	}
-	c.SetDeadline(s.now().Add(connectionTimeout))
+	_ = c.SetDeadline(s.now().Add(connectionTimeout))
 	defer func() {
 		if err != nil {
 			c.Close()

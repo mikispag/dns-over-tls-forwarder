@@ -19,7 +19,7 @@ func TestCache(t *testing.T) {
 		name        string
 		size        int
 		ops         []testOp
-		wantMetrics Metrics
+		wantMetrics CacheMetrics
 		wantErr     bool
 	}{
 		{
@@ -49,7 +49,7 @@ func TestCache(t *testing.T) {
 				{put, "foo", "bar"},
 				{get, "foo", "bar"},
 			},
-			wantMetrics: Metrics{HitMFA: 1, MissMFA: 1, MissLRU: 1, Miss: 1},
+			wantMetrics: CacheMetrics{HitMFA: 1, MissMFA: 1, MissLRU: 1, Miss: 1},
 		},
 		{
 			name: "put get",
@@ -59,7 +59,7 @@ func TestCache(t *testing.T) {
 				{put, "foo", "bar"},
 				{get, "foo", "bar"},
 			},
-			wantMetrics: Metrics{MissMFA: 2, MissLRU: 1, HitLRU: 1, Miss: 1},
+			wantMetrics: CacheMetrics{MissMFA: 2, MissLRU: 1, HitLRU: 1, Miss: 1},
 		},
 		{
 			name: "put get put get",
@@ -72,7 +72,7 @@ func TestCache(t *testing.T) {
 				{get, "fooffa", "barba"},
 				{get, "foo", "bar"},
 			},
-			wantMetrics: Metrics{HitMFA: 1, MissMFA: 3, MissLRU: 1, HitLRU: 2, Miss: 1},
+			wantMetrics: CacheMetrics{HitMFA: 1, MissMFA: 3, MissLRU: 1, HitLRU: 2, Miss: 1},
 		},
 		{
 			name: "put put get get",
@@ -83,7 +83,7 @@ func TestCache(t *testing.T) {
 				{get, "foo", "bar"},
 				{get, "fooffa", "barba"},
 			},
-			wantMetrics: Metrics{MissMFA: 2, HitLRU: 2},
+			wantMetrics: CacheMetrics{MissMFA: 2, HitLRU: 2},
 		},
 		{
 			name: "use all store",
@@ -99,7 +99,7 @@ func TestCache(t *testing.T) {
 				{get, "foo3", "bar3"},
 				{get, "foo4", "bar4"},
 			},
-			wantMetrics: Metrics{HitMFA: 2, MissMFA: 2, HitLRU: 2},
+			wantMetrics: CacheMetrics{HitMFA: 2, MissMFA: 2, HitLRU: 2},
 		},
 		{
 			name: "use all store check MFA",
@@ -118,7 +118,7 @@ func TestCache(t *testing.T) {
 				{get, "foo4", "bar4"},
 				{get, "foo5", "bar5"},
 			},
-			wantMetrics: Metrics{
+			wantMetrics: CacheMetrics{
 				HitMFA:              2,
 				MissMFA:             4,
 				HitLRU:              3,
@@ -145,7 +145,7 @@ func TestCache(t *testing.T) {
 				{get, "foo4", "bar4"},
 				{get, "foo5", "bar5"},
 			},
-			wantMetrics: Metrics{
+			wantMetrics: CacheMetrics{
 				HitMFA:              2,
 				MissMFA:             4,
 				HitLRU:              3,
@@ -190,7 +190,7 @@ func TestCache(t *testing.T) {
 				{get, "foo4", ""},
 				{put, "foo5", "bar5"},
 			},
-			wantMetrics: Metrics{
+			wantMetrics: CacheMetrics{
 				HitMFA:              2,
 				MissMFA:             11,
 				HitLRU:              10,
@@ -210,7 +210,7 @@ func TestCache(t *testing.T) {
 				{put, "foo5", "bar"},
 				{get, "foo1", ""},
 			},
-			wantMetrics: Metrics{
+			wantMetrics: CacheMetrics{
 				MissMFA: 1,
 				MissLRU: 1,
 				Miss:    1,
