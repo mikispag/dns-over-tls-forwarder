@@ -36,18 +36,18 @@ type Server struct {
 	currentTime time.Time
 }
 
-// New constructs a new server but does not start it, use Run to start it afterwards.
+// NewServer constructs a new server but does not start it, use Run to start it afterwards.
 // Calling New(0) is valid and comes with working defaults:
 // * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
 // * If no upstream servers are specified default ones will be used.
-func NewServer(cacheSize int, upstreamServers ...string) *Server {
+func NewServer(cacheSize int, evictMetrics bool, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
 	case cacheSize < 0:
 		cacheSize = 0
 	}
-	cache, err := newCache(cacheSize)
+	cache, err := newCache(cacheSize, evictMetrics)
 	if err != nil {
 		log.Fatal("Unable to initialize the cache")
 	}
@@ -102,9 +102,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := dns.NewServeMux()
 	mux.Handle(".", s)
 
-	servers := []dns.Server{
-		{Addr: addr, Net: "tcp", Handler: mux},
-		{Addr: addr, Net: "udp", Handler: mux},
+	servers := []*dns.Server{
+		&dns.Server{Addr: addr, Net: "tcp", Handler: mux},
+		&dns.Server{Addr: addr, Net: "udp", Handler: mux},
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -112,7 +112,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	go func() {
 		<-ctx.Done()
 		for _, s := range servers {
-			s.Shutdown()
+			_ = s.Shutdown()
 		}
 		for _, p := range s.pools {
 			p.shutdown()

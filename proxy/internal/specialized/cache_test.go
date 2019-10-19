@@ -16,10 +16,11 @@ func TestCache(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		size    int
-		ops     []testOp
-		wantErr bool
+		name        string
+		size        int
+		ops         []testOp
+		wantMetrics Metrics
+		wantErr     bool
 	}{
 		{
 			name: "negative",
@@ -40,7 +41,7 @@ func TestCache(t *testing.T) {
 			},
 		},
 		{
-			name:    "put and get",
+			name:    "put get",
 			size:    1,
 			wantErr: true,
 			ops: []testOp{
@@ -48,6 +49,7 @@ func TestCache(t *testing.T) {
 				{put, "foo", "bar"},
 				{get, "foo", "bar"},
 			},
+			wantMetrics: Metrics{HitMFA: 1, MissMFA: 1, MissLRU: 1, Miss: 1},
 		},
 		{
 			name: "put get",
@@ -57,6 +59,7 @@ func TestCache(t *testing.T) {
 				{put, "foo", "bar"},
 				{get, "foo", "bar"},
 			},
+			wantMetrics: Metrics{MissMFA: 2, MissLRU: 1, HitLRU: 1, Miss: 1},
 		},
 		{
 			name: "put get put get",
@@ -67,7 +70,9 @@ func TestCache(t *testing.T) {
 				{get, "foo", "bar"},
 				{put, "fooffa", "barba"},
 				{get, "fooffa", "barba"},
+				{get, "foo", "bar"},
 			},
+			wantMetrics: Metrics{HitMFA: 1, MissMFA: 3, MissLRU: 1, HitLRU: 2, Miss: 1},
 		},
 		{
 			name: "put put get get",
@@ -78,6 +83,7 @@ func TestCache(t *testing.T) {
 				{get, "foo", "bar"},
 				{get, "fooffa", "barba"},
 			},
+			wantMetrics: Metrics{MissMFA: 2, HitLRU: 2},
 		},
 		{
 			name: "use all store",
@@ -93,6 +99,7 @@ func TestCache(t *testing.T) {
 				{get, "foo3", "bar3"},
 				{get, "foo4", "bar4"},
 			},
+			wantMetrics: Metrics{HitMFA: 2, MissMFA: 2, HitLRU: 2},
 		},
 		{
 			name: "use all store check MFA",
@@ -109,7 +116,15 @@ func TestCache(t *testing.T) {
 				{get, "foo2", ""},
 				{get, "foo3", "bar3"},
 				{get, "foo4", "bar4"},
-				{put, "foo5", "bar5"},
+				{get, "foo5", "bar5"},
+			},
+			wantMetrics: Metrics{
+				HitMFA:              2,
+				MissMFA:             4,
+				HitLRU:              3,
+				MissLRU:             1,
+				Miss:                1,
+				RecentlyEvictedMiss: 1,
 			},
 		},
 		{
@@ -128,7 +143,15 @@ func TestCache(t *testing.T) {
 				{get, "foo2", "barr"},
 				{get, "foo3", ""},
 				{get, "foo4", "bar4"},
-				{put, "foo5", "bar5"},
+				{get, "foo5", "bar5"},
+			},
+			wantMetrics: Metrics{
+				HitMFA:              2,
+				MissMFA:             4,
+				HitLRU:              3,
+				MissLRU:             1,
+				Miss:                1,
+				RecentlyEvictedMiss: 1,
 			},
 		},
 		{
@@ -167,11 +190,38 @@ func TestCache(t *testing.T) {
 				{get, "foo4", ""},
 				{put, "foo5", "bar5"},
 			},
+			wantMetrics: Metrics{
+				HitMFA:              2,
+				MissMFA:             11,
+				HitLRU:              10,
+				MissLRU:             1,
+				Miss:                1,
+				RecentlyEvictedMiss: 1,
+			},
+		},
+		{
+			name: "push out of evict ring",
+			size: 2,
+			ops: []testOp{
+				{put, "foo1", "bar"},
+				{put, "foo2", "bar"},
+				{put, "foo3", "bar"},
+				{put, "foo4", "bar"},
+				{put, "foo5", "bar"},
+				{get, "foo1", ""},
+			},
+			wantMetrics: Metrics{
+				MissMFA: 1,
+				MissLRU: 1,
+				Miss:    1,
+			},
 		},
 	}
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%s size %d", tt.name, tt.size), func(t *testing.T) {
-			c, err := NewCache(tt.size)
+		// Every test will be run with both evict metrics and without
+		evictm := true
+		tester := func(t *testing.T) {
+			c, err := NewCache(tt.size, evictm)
 			if err != nil != tt.wantErr {
 				t.Fatalf("err: got %v want %v", err, tt.wantErr)
 			}
@@ -193,13 +243,20 @@ func TestCache(t *testing.T) {
 					}
 				}
 			}
-		})
+			if got := c.Metrics(); got != tt.wantMetrics {
+				t.Errorf("metrics: got \n%+v\nwant\n%+v", got, tt.wantMetrics)
+			}
+		}
+		t.Run(fmt.Sprintf("%s size %d evict metrics", tt.name, tt.size), tester)
+		evictm = false
+		tt.wantMetrics.RecentlyEvictedMiss = 0
+		t.Run(fmt.Sprintf("%s size %d", tt.name, tt.size), tester)
 	}
 }
 
 func preloadCache(b *testing.B) *Cache {
 	b.Helper()
-	c, err := NewCache(65535)
+	c, err := NewCache(65535, false)
 	if err != nil {
 		b.Fatalf("Cannot construct cache: %v", err)
 	}

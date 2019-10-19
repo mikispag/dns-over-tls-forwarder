@@ -11,3 +11,8 @@ dns-over-tls-forwarder
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+
+# Fuzzing
+*/corpus
+*/suppressions
+*/fuzz-fuzz.zip

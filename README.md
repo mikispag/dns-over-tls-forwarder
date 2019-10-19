@@ -21,14 +21,16 @@ A custom comma-separated list of upstream servers can be specified with the `-s`
 ## Usage
 ```console
   -a address:port
-    	the address:port to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53` (default ":53")
+        the address:port to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53` (default ":53")
+  -em
+        collect metrics on evictions
   -l string
-    	log file path
+        log file path
   -pprof int
-    	The port to use for pprof debugging. If set to 0 (default) pprof will not be started.
+        The port to use for pprof debugging. If set to 0 (default) pprof will not be started.
   -s string
-    	comma-separated list of upstream servers (default "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8")
-  -v	verbose mode
+        comma-separated list of upstream servers (default "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8")
+  -v    verbose mode
 ```
 ## Credits
 

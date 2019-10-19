@@ -19,8 +19,8 @@ type cacheValue struct {
 	exp time.Time
 }
 
-func newCache(size int) (*cache, error) {
-	c, err := specialized.NewCache(size)
+func newCache(size int, evictMetrics bool) (*cache, error) {
+	c, err := specialized.NewCache(size, evictMetrics)
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,8 @@ type Cache struct {
 	timeNow func() uint
 	// capacity is the maximum storage the cache can hold
 	capacity int
+	// m is used to collect metrics to better tune cache
+	m metrics
 }
 
 // compute max size at compile time since it depends on the target architecture
@@ -30,7 +32,10 @@ const maxsize = (^uint(0) >> 1)
 
 // NewCache constructs a new Cache ready for use.
 // The specified size should never be bigger or roughly as big as the maximum available value for uint.
-func NewCache(size int) (*Cache, error) {
+// evictMetrics tells the cache to collect metrics on recently evicted items,
+// which doubles the memory size of the cache.
+// If evictMetrics is false only normal hits and misses will be collected.
+func NewCache(size int, evictMetrics bool) (*Cache, error) {
 	if size <= 0 {
 		return nil, nil
 	}
@@ -44,8 +49,20 @@ func NewCache(size int) (*Cache, error) {
 		lru:      newStore(size/2, byTime),
 		mfa:      newStore(size/2+size%2, byAccesses),
 		capacity: size,
+		m:        newMetrics(size, evictMetrics),
 	}
 	return &c, nil
+}
+
+// Metrics copies current metrics values and returns the snapshot.
+// If the cache has size<=0 zero metrics will be returned.
+func (c *Cache) Metrics() Metrics {
+	if c == nil {
+		return Metrics{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.m.Metrics
 }
 
 // SetTimer will set the cache internal timer to the given one.
@@ -73,12 +90,17 @@ func (c *Cache) Get(k string) (v Value, ok bool) {
 
 	if v, ok := c.mfa.get(now, k); ok {
 		// Hit on MFA
+		c.m.hitMFA()
 		return v, true
 	}
+	c.m.missMFA()
 	if v, ok := c.lru.get(now, k); ok {
 		// Hit on LRU
+		c.m.hitLRU()
 		return v, true
 	}
+	c.m.missLRU()
+	c.m.miss(k)
 	return nil, false
 }
 
@@ -116,16 +138,30 @@ func (c *Cache) Put(k string, v Value) {
 	// Check if the evicted item was accessed enough times to be promoted to MFA.
 	if c.mfa.peek().a > lruovf.a ||
 		c.mfa.peek().a == lruovf.a && c.mfa.peek().t < lruovf.t {
+		c.m.evict(lruovf.key)
 		return
 	}
+
 	mfaovf := c.mfa.put(now, lruovf.key, lruovf.v, lruovf.a)
+	if mfaovf.v == nil {
+		return
+	}
 	// Pushing to MFA popped out an item. If the item was in MFA it means
 	// it is probably worth keeping around for a while longer.
+	if c.lru.Len() <= 0 || c.lru.peek().a >= mfaovf.a {
+		// Evicted from MFA, no promotion
+		c.m.evict(mfaovf.key)
+		return
+	}
 	// Reset access count and push it to LRU if it was accessed more than the
 	// last item in LRU, discard otherwise.
-	if c.lru.Len() > 0 && c.lru.peek().a < mfaovf.a {
-		c.lru.put(now, mfaovf.key, mfaovf.v, 1)
+	lruovf = c.lru.put(now, mfaovf.key, mfaovf.v, 1)
+	if lruovf.v == nil {
+		// Evicted from MFA, promoted to LRU
+		return
 	}
+	// Evicted from MFA, promoted to LRU, caused eviction
+	c.m.evict(lruovf.key)
 }
 
 // Len returns the amount of items currently stored in the cache.
