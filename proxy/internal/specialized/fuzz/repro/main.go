@@ -3,33 +3,38 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
+	"path"
 
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
 
-var called bool
-
 func printf(f string, d ...interface{}) {
-	called = true
-	fmt.Printf(f, d...)
-	fmt.Println()
+	fmt.Fprintf(out, f, d...)
+	fmt.Fprintln(out)
 }
+
+var out io.Writer
 
 func main() {
 	for _, v := range os.Args[1:] {
-		fmt.Println(v)
+		fname := "./corpus_decoded/" + path.Base(v)
+		f, err := os.OpenFile(fname, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			barf("cannot open output file: %q", fname)
+		}
+		out = io.MultiWriter(os.Stdout, f)
+		fmt.Fprintln(out, v)
 		buf, err := ioutil.ReadFile(v)
 		if err != nil {
 			os.Exit(1)
 		}
 		Fuzz(buf)
-		fmt.Println()
+		fmt.Fprintln(out)
 	}
 }
-
-//===============================FUZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
 
 const (
 	get = false
@@ -69,39 +74,55 @@ func Fuzz(b []byte) int {
 	if r <= 0 {
 		return r
 	}
+	printf("size: %d", size)
 	c, err := specialized.NewCache(size)
 	if err != nil {
 		return 0
 	}
 	exp := make(map[string]string)
 	for k, op := range tos {
-		if op.op == get {
-			v, ok := c.Get(op.k)
-			printf("get %q", op.k)
-			w, okk := exp[op.k]
-			if ok && okk {
-				vv := v.(string)
-				if w != vv {
-					barf("got %s want %s", vv, w)
-				}
+		if op.op == put {
+			// PUT
+			c.Put(op.k, op.v)
+			printf("put(%q,%q)", op.k, op.v)
+			exp[op.k] = op.v
+			if c.Len() > size {
+				barf("cache outgrew expected limit")
+			}
+			if k < size && c.Len() < len(exp) {
+				barf("cache didn't grow as map")
 			}
 			continue
 		}
-		c.Put(op.k, op.v)
-		printf("put %q", op.k)
-		exp[op.k] = op.v
-		if len(exp) > size {
-			for k := range exp {
-				delete(exp, k)
-				break
+		// GET
+		v, ok := c.Get(op.k)
+		w, okk := exp[op.k]
+		if !ok && !okk {
+			// Double miss, we don't care
+			printf("get(%q): double miss", op.k)
+			continue
+		}
+		if !ok && okk {
+			if c.Len() < c.Cap() {
+				// Cache miss, map hit, cache is not full
+				barf("get(%q): spurious miss", op.k)
 			}
+			// Cache miss, map hit, item was evicted
+			printf("get(%q): evict miss", op.k)
+			continue
 		}
-		if c.Len() > size {
-			barf("cache outgrew expected limit")
+		// Cache hit
+		vv := v.(string)
+		if !okk {
+			// Cache hit but entry is not in map
+			barf("get(%q): spurious hit %v", op.k, vv)
 		}
-		if k < size && c.Len() < len(exp) {
-			barf("cache didn't grow as map")
+		// Double hit
+		if ok && okk && w != vv {
+			// Double hit, but different values
+			barf("got %s want %s", vv, w)
 		}
+		printf("get(%q): hit! %v", op.k, vv)
 	}
 	return r
 }
