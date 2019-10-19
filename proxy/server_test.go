@@ -14,9 +14,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-func init() {
-	resolutionms = 1
-}
+func init() { resolutionMilliseconds = 1 }
 
 type fakeServer func(w dns.ResponseWriter, q *dns.Msg)
 
@@ -102,7 +100,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	go rems.ActivateAndServe()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := NewServer(cacheSize, raddr)
+	srv := NewServer(cacheSize, false, raddr)
 	srv.dial = flst.dialer()
 	go srv.Run(ctx, laddr)
 	// TODO find a way to report the server has started

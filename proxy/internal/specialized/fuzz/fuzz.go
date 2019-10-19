@@ -45,17 +45,18 @@ func Fuzz(b []byte) int {
 	if r <= 0 {
 		return r
 	}
-	printf("size: %d", size)
-	c, err := specialized.NewCache(size)
+	Printf("size: %d", size)
+	c, err := specialized.NewCache(size, true)
 	if err != nil {
 		return 0
 	}
+	var hits, misses uint
 	exp := make(map[string]string)
 	for k, op := range tos {
 		if op.op == put {
 			// PUT
 			c.Put(op.k, op.v)
-			printf("put(%q,%q)", op.k, op.v)
+			Printf("put(%q,%q)", op.k, op.v)
 			exp[op.k] = op.v
 			if c.Len() > size {
 				barf("cache outgrew expected limit")
@@ -67,10 +68,15 @@ func Fuzz(b []byte) int {
 		}
 		// GET
 		v, ok := c.Get(op.k)
+		if ok {
+			hits++
+		} else {
+			misses++
+		}
 		w, okk := exp[op.k]
 		if !ok && !okk {
 			// Double miss, we don't care
-			printf("get(%q): double miss", op.k)
+			Printf("get(%q): double miss", op.k)
 			continue
 		}
 		if !ok && okk {
@@ -79,7 +85,7 @@ func Fuzz(b []byte) int {
 				barf("get(%q): spurious miss", op.k)
 			}
 			// Cache miss, map hit, item was evicted
-			printf("get(%q): evict miss", op.k)
+			Printf("get(%q): evict miss", op.k)
 			continue
 		}
 		// Cache hit
@@ -93,13 +99,22 @@ func Fuzz(b []byte) int {
 			// Double hit, but different values
 			barf("got %s want %s", vv, w)
 		}
-		printf("get(%q): hit! %v", op.k, vv)
+		Printf("get(%q): hit! %v", op.k, vv)
+	}
+	if size <= 0 {
+		return r
+	}
+	m := c.Metrics()
+	if m.Hit() != hits {
+		barf("hits: got %d want %d", m.Hit(), hits)
+	}
+	if m.Miss != misses {
+		barf("misses: got %d want %d", m.Miss, misses)
 	}
 	return r
 }
 
-func barf(f string, d ...interface{}) {
-	panic(fmt.Sprintf(f, d...))
-}
+func barf(f string, d ...interface{}) { panic(fmt.Sprintf(f, d...)) }
 
-func printf(f string, d ...interface{}) {}
+// Printf is the printer for the fuzzer. It defaults to discarding.
+var Printf = func(f string, d ...interface{}) {}

@@ -40,14 +40,14 @@ type Server struct {
 // Calling New(0) is valid and comes with working defaults:
 // * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
 // * If no upstream servers are specified default ones will be used.
-func NewServer(cacheSize int, upstreamServers ...string) *Server {
+func NewServer(cacheSize int, evictMetrics bool, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
 	case cacheSize < 0:
 		cacheSize = 0
 	}
-	cache, err := newCache(cacheSize)
+	cache, err := newCache(cacheSize, evictMetrics)
 	if err != nil {
 		log.Fatal("Unable to initialize the cache")
 	}
