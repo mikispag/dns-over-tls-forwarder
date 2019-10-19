@@ -1,7 +1,7 @@
 package specialized
 
-// Metrics carries metrics about a cache usage.
-type Metrics struct {
+// CacheMetrics carries metrics about a cache usage.
+type CacheMetrics struct {
 	// Stats on MFA
 
 	// HitMFA is the count of hits that returned a value from MFA.
@@ -29,14 +29,14 @@ type Metrics struct {
 }
 
 // Hit returns the total amount of hits.
-func (m Metrics) Hit() uint { return m.HitMFA + m.HitLRU }
+func (m CacheMetrics) Hit() uint { return m.HitMFA + m.HitLRU }
 
 // Tot returns the total amount of accesses.
-func (m Metrics) Tot() uint { return m.Hit() + m.Miss }
+func (m CacheMetrics) Tot() uint { return m.Hit() + m.Miss }
 
 // metrics is not safe for concurrent use, accessors should synchronize to access them
 type metrics struct {
-	Metrics
+	CacheMetrics
 
 	// store is a storage for the recently evicted ring
 	store []string

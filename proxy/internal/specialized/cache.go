@@ -56,13 +56,13 @@ func NewCache(size int, evictMetrics bool) (*Cache, error) {
 
 // Metrics copies current metrics values and returns the snapshot.
 // If the cache has size<=0 zero metrics will be returned.
-func (c *Cache) Metrics() Metrics {
+func (c *Cache) Metrics() CacheMetrics {
 	if c == nil {
-		return Metrics{}
+		return CacheMetrics{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.m.Metrics
+	return c.m.CacheMetrics
 }
 
 // SetTimer will set the cache internal timer to the given one.

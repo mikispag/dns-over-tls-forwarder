@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	_ "net/http/pprof"
 	"os"
+	"path"
+	"runtime/debug"
 	"strings"
 
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 	log "github.com/sirupsen/logrus"
 )
-
-const version = "1.0.0"
 
 var (
 	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
@@ -49,11 +50,9 @@ func main() {
 		}
 	}
 
-	if *ppr != 0 {
-		go log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), nil))
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		log.Infof("%s v%s", path.Base(bi.Path), bi.Main.Version)
 	}
-
-	log.Infof("DNS-over-TLS-Forwarder version %s", version)
 
 	sigs := make(chan os.Signal, 1)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,5 +63,13 @@ func main() {
 	}()
 	// Run the server with a default cache size and the specified upstream servers.
 	server := proxy.NewServer(0, *evictMetrics, strings.Split(*upstreamServers, ",")...)
+
+	if *ppr != 0 {
+		mux := http.NewServeMux()
+		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		mux.Handle("/debug/server/", server.DebugHandler())
+		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
+	}
+
 	log.Fatal(server.Run(ctx, *addr))
 }

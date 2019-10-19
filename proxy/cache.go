@@ -11,6 +11,8 @@ import (
 const maxTTL = time.Duration(24) * time.Hour
 
 type cache struct {
+	// TODO(empijei): This is too much indirection, it doesn't make sense to just have a pointer to the
+	// actual cache in a pointer to this struct.
 	c *specialized.Cache
 }
 
