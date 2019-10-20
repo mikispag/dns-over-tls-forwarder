@@ -8,7 +8,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const maxTTL = time.Duration(24) * time.Hour
+// Maximum TTL to cache, set to 2^31 - 1. See: https://tools.ietf.org/html/rfc1034
+const maxTTL = time.Duration(2147483647) * time.Second
 
 type cache struct {
 	// TODO(empijei): This is too much indirection, it doesn't make sense to just have a pointer to the
@@ -68,9 +69,10 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 
 	now := time.Now().UTC()
 	minExpirationTime := now.Add(maxTTL)
-	// Do not cache negative results.
-	if len(v.Answer) == 0 {
-		log.Debugf("[CACHE] Did not cache empty answer %v", key(k))
+	cacheKey := key(k)
+	// Do not cache DNS errors.
+	if v.Rcode != dns.RcodeSuccess {
+		log.Debugf("[CACHE] Did not cache error answer (%v) for key %v", dns.OpcodeToString[v.Rcode], cacheKey)
 		return
 	}
 	for _, a := range v.Answer {
@@ -85,7 +87,7 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	// Always compress on the wire.
 	cm.Compress = true
 
-	c.c.Put(key(k), cacheValue{m: *cm, exp: minExpirationTime})
+	c.c.Put(cacheKey, cacheValue{m: *cm, exp: minExpirationTime})
 }
 
 func key(k *dns.Msg) string {
