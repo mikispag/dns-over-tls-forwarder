@@ -9,7 +9,7 @@ import (
 )
 
 // Maximum TTL to cache, set to 2^31 - 1. See: https://tools.ietf.org/html/rfc1034
-const maxTTL = time.Duration(2147483647) * time.Second
+const maxTTL = 2147483647 * time.Second
 
 type cache struct {
 	// TODO(empijei): This is too much indirection, it doesn't make sense to just have a pointer to the
