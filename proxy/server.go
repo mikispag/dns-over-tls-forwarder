@@ -255,7 +255,7 @@ func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
 		}(p)
 	}
 	for c := 0; c < len(s.pools); c++ {
-		if r := <-resps; r != nil {
+		if r := <-resps; r != nil && r.Rcode == dns.RcodeSuccess {
 			return r
 		}
 	}
