@@ -232,9 +232,11 @@ func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
 	// Let's retry a few times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < connectionRetries; c++ {
+		log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionRetries)
 		m = s.forwardMessageAndGetResponse(q)
 	}
 	if m == nil {
+		log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionRetries)
 		return nil
 	}
 	s.cache.put(q, m)
