@@ -19,8 +19,6 @@ import (
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
 
-func init() { resolutionMilliseconds = 1 }
-
 type fakeServer func(w dns.ResponseWriter, q *dns.Msg)
 
 func (f fakeServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) { f(w, q) }
@@ -145,7 +143,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 			}
 		}()
 		// TODO find a way to report the server has started
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 	}
 
 	if tb.Failed() {

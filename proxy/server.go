@@ -19,14 +19,12 @@ import (
 
 const (
 	defaultCacheSize       = 65536
+	connectionRetries      = 2
 	connectionTimeout      = 10 * time.Second
 	connectionsPerUpstream = 5
 	refreshQueueSize       = 2048
+	timerResolution        = 1 * time.Second
 )
-
-// Minimum amount of milliseconds that have to pass between two
-// requests of the current time issued to the system.
-var resolutionMilliseconds = 500
 
 // Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
 type Server struct {
@@ -209,7 +207,7 @@ func (s *Server) refresher(ctx context.Context) {
 }
 
 func (s *Server) timer(ctx context.Context) {
-	t := time.NewTicker(time.Duration(resolutionMilliseconds) * time.Millisecond)
+	t := time.NewTicker(timerResolution)
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,8 +230,8 @@ func (s *Server) now() time.Time {
 
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
-	// Let's try a couple of times if we can't resolve it at the first try.
-	for c := 0; m == nil && c < 2; c++ {
+	// Let's retry a few times if we can't resolve it at the first try.
+	for c := 0; m == nil && c < connectionRetries; c++ {
 		m = s.forwardMessageAndGetResponse(q)
 	}
 	if m == nil {
@@ -271,23 +269,24 @@ func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error
 	}
 	_ = c.SetDeadline(s.now().Add(connectionTimeout))
 	defer func() {
-		if err != nil {
-			c.Close()
-			return
+		if err == nil {
+			p.put(c)
 		}
-		p.put(c)
 	}()
 	if err := c.WriteMsg(q); err != nil {
 		log.Debugf("Send question message failed: %v", err)
+		c.Close()
 		return nil, err
 	}
 	resp, err = c.ReadMsg()
 	if err != nil {
 		log.Debugf("Error while reading message: %v", err)
+		c.Close()
 		return nil, err
 	}
 	if resp == nil {
-		log.Debug("Response message returned nil. Please check your query or DNS configuration")
+		log.Debug(errNilResponse)
+		c.Close()
 		return nil, errNilResponse
 	}
 	return resp, err
