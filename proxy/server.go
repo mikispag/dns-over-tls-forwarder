@@ -19,7 +19,6 @@ import (
 
 const (
 	defaultCacheSize       = 65536
-	connectionRetries      = 2
 	connectionTimeout      = 10 * time.Second
 	connectionsPerUpstream = 5
 	refreshQueueSize       = 2048
@@ -231,12 +230,12 @@ func (s *Server) now() time.Time {
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
 	// Let's retry a few times if we can't resolve it at the first try.
-	for c := 0; m == nil && c < connectionRetries; c++ {
-		log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionRetries)
+	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
+		log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
 		m = s.forwardMessageAndGetResponse(q)
 	}
 	if m == nil {
-		log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionRetries)
+		log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
 		return nil
 	}
 	s.cache.put(q, m)
