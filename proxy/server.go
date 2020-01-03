@@ -20,7 +20,7 @@ import (
 const (
 	defaultCacheSize       = 65536
 	connectionTimeout      = 10 * time.Second
-	connectionsPerUpstream = 5
+	connectionsPerUpstream = 2
 	refreshQueueSize       = 2048
 	timerResolution        = 1 * time.Second
 )
@@ -254,7 +254,8 @@ func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
 		}(p)
 	}
 	for c := 0; c < len(s.pools); c++ {
-		if r := <-resps; r != nil && r.Rcode == dns.RcodeSuccess {
+		// Return the response only if it has Rcode NoError or NXDomain, otherwise try another pool.
+		if r := <-resps; r != nil && (r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError) {
 			return r
 		}
 	}
