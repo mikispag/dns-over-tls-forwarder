@@ -61,7 +61,12 @@ func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 	log.Debugf("[CACHE] HIT %q", k)
 	// Rewrite the TTL.
 	for _, a := range mv.Answer {
-		a.Header().Ttl = uint32(time.Since(v.exp).Seconds() * -1)
+		ttl := uint32(time.Since(v.exp).Seconds() * -1)
+		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
+		if ttl < uint32(minTTL.Seconds()) {
+			ttl = uint32(minTTL.Seconds())
+		}
+		a.Header().Ttl = ttl
 	}
 	return mv, true
 }
@@ -81,10 +86,7 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	}
 	for _, a := range v.Answer {
 		ttl := time.Duration(a.Header().Ttl) * time.Second
-		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
 		if ttl < minTTL {
-			log.Debugf("[CACHE] Upstream TTL %v < minimum TTL (%v) for %q. Rewriting it.", ttl, minTTL, cacheKey)
-			a.Header().Ttl = uint32(minTTL.Seconds())
 			ttl = minTTL
 		}
 		exp := now.Add(ttl)
