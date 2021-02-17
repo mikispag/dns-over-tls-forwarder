@@ -6,7 +6,7 @@ require (
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/miekg/dns v1.1.38
-	github.com/sirupsen/logrus v1.7.0
+	github.com/sirupsen/logrus v1.7.1
 	github.com/stretchr/testify v1.5.1 // indirect
 	golang.org/x/crypto v0.0.0-20201116153603-4be66e5b6582 // indirect
 	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b // indirect
