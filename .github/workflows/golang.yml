@@ -1,8 +1,9 @@
 env:
   GITHUB_USERNAME: mikispag
   GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+  GO111MODULE: on
   GOPRIVATE: 'github.com/mikispag/*'
-name: Lint, build and test
+name: Golang CI
 on:
   push:
     tags:
@@ -12,17 +13,46 @@ on:
       - main
   pull_request:
 jobs:
-  golangci:
-    name: Lint, build and test
+  buildtest:
+    # The type of runner that the job will run on
     runs-on: ubuntu-latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+          # Set up git auth for private repos
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      # Configure git for private repos
       - name: Configure git for private repos
         run: git config --global url."https://${GITHUB_USERNAME}:${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com".insteadOf "https://github.com"
-      - uses: actions/checkout@v2
+      # Setup Go
+      - name: Setup Go
+        uses: actions/setup-go@v2
+      # Build
+      - name: Build
+        run: go build ./...
+      # Run testing on the code
+      - name: Test
+        run: go test -v ./...
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+          # Set up git auth for private repos
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      # Configure git for private repos
+      - name: Configure git for private repos
+        run: git config --global url."https://${GITHUB_USERNAME}:${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com".insteadOf "https://github.com"
+      # Run golangci-lint
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v2
         with:
-          version: latest
-          args: '--timeout=5m'
-      - name: run
-        uses: cedrickring/golang-action@1.6.0
+          args: '--timeout 5m'
