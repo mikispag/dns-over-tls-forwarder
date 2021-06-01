@@ -261,7 +261,7 @@ func preloadCache(b *testing.B) *Cache {
 		b.Fatalf("Cannot construct cache: %v", err)
 	}
 	for i := 0; i < 256; i++ {
-		c.Put(string(i), i)
+		c.Put(string(rune(i)), i)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -272,7 +272,7 @@ func BenchmarkHit(b *testing.B) {
 	c := preloadCache(b)
 	for i := 0; i < b.N; i++ {
 		k := i % 256
-		vv, ok := c.Get(string(k))
+		vv, ok := c.Get(string(rune(k)))
 		if !ok {
 			b.Fatalf("Unexpected miss: %v", k)
 		}
@@ -286,7 +286,7 @@ func BenchmarkMiss(b *testing.B) {
 	c := preloadCache(b)
 	for i := 0; i < b.N; i++ {
 		k := i%256 + 256
-		_, ok := c.Get(string(k))
+		_, ok := c.Get(string(rune(k)))
 		if ok {
 			b.Fatalf("Unexpected hit: %v", k)
 		}
@@ -295,7 +295,7 @@ func BenchmarkMiss(b *testing.B) {
 func BenchmarkUpdate(b *testing.B) {
 	var items [256]string
 	for i := 0; i < 256; i++ {
-		items[i] = string(i)
+		items[i] = string(rune(i))
 	}
 	c := preloadCache(b)
 	for i := 0; i < b.N; i++ {
@@ -306,14 +306,14 @@ func BenchmarkUpdate(b *testing.B) {
 func BenchmarkMix(b *testing.B) {
 	var items [256]string
 	for i := 0; i < 256; i++ {
-		items[i] = string(i)
+		items[i] = string(rune(i))
 	}
 	c := preloadCache(b)
 	for i := 0; i < b.N; i++ {
 		// Get
 		{
 			k := i % 256
-			vv, ok := c.Get(string(k))
+			vv, ok := c.Get(string(rune(k)))
 			if !ok {
 				b.Fatalf("Unexpected miss: %v", k)
 			}
@@ -330,7 +330,7 @@ func BenchmarkMix(b *testing.B) {
 		// Miss
 		{
 			k := i%256 + 256
-			_, ok := c.Get(string(k))
+			_, ok := c.Get(string(rune(k)))
 			if ok {
 				b.Fatalf("Unexpected hit: %v", k)
 			}
