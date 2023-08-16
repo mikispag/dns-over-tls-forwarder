@@ -137,7 +137,7 @@ func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dn
 func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 	inboundIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 	log.Debugf("Question from %s: %q", inboundIP, q.Question[0])
-	m := s.getAnswer(q)
+	m := s.GetAnswer(q)
 	if m == nil {
 		dns.HandleFailed(w, q)
 		return
@@ -171,7 +171,7 @@ func (s *Server) DebugHandler() http.Handler {
 	})
 }
 
-func (s *Server) getAnswer(q *dns.Msg) *dns.Msg {
+func (s *Server) GetAnswer(q *dns.Msg) *dns.Msg {
 	m, ok := s.cache.get(q)
 	// Cache HIT.
 	if ok {
