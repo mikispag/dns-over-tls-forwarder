@@ -71,5 +71,5 @@ func main() {
 		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
 	}
 
-	log.Fatal(server.Run(ctx, *addr))
+	log.Fatal(server.RunWithHandle(ctx, *addr, server.ServeDNS))
 }

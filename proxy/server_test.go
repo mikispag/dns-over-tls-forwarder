@@ -138,7 +138,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		ts.s = NewServer(cacheSize, false, raddr)
 		ts.s.dial = flst.dialer()
 		go func() {
-			if err := ts.s.Run(ctx, ts.laddr); err != nil {
+			if err := ts.s.RunWithHandle(ctx, ts.laddr, ts.s.ServeDNS); err != nil {
 				tb.Errorf("Cannot run Server: %v", err)
 			}
 		}()
