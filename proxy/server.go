@@ -104,8 +104,8 @@ func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dn
 	mux.HandleFunc(".", handler)
 
 	servers := []*dns.Server{
-		//{Addr: addr, Net: "tcp", Handler: mux},
-		{Addr: addr, Net: "udp", Handler: mux, ReusePort: true},
+		{Addr: addr, Net: "tcp", Handler: mux, ReusePort: false},
+		//{Addr: addr, Net: "udp", Handler: mux, ReusePort: false},
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -115,9 +115,9 @@ func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dn
 		for _, s := range servers {
 			_ = s.Shutdown()
 		}
-		//for _, p := range s.pools {
-		//	p.shutdown()
-		//}
+		for _, p := range s.pools {
+			p.shutdown()
+		}
 	}()
 
 	go s.refresher(ctx)
