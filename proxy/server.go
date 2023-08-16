@@ -76,7 +76,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 	return func() (*dns.Conn, error) {
 		tlsConf := &tls.Config{
 			// Force TLS 1.2 as minimum version.
-			MinVersion: tls.VersionTLS12,
+			MinVersion: tls.VersionTLS13,
 		}
 		dialableAddress := upstreamServer
 		serverComponents := strings.Split(upstreamServer, "@")
@@ -104,8 +104,8 @@ func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dn
 	mux.HandleFunc(".", handler)
 
 	servers := []*dns.Server{
-		&dns.Server{Addr: addr, Net: "tcp", Handler: mux},
-		&dns.Server{Addr: addr, Net: "udp", Handler: mux},
+		//{Addr: addr, Net: "tcp", Handler: mux},
+		{Addr: addr, Net: "udp", Handler: mux, ReusePort: true},
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -115,9 +115,9 @@ func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dn
 		for _, s := range servers {
 			_ = s.Shutdown()
 		}
-		for _, p := range s.pools {
-			p.shutdown()
-		}
+		//for _, p := range s.pools {
+		//	p.shutdown()
+		//}
 	}()
 
 	go s.refresher(ctx)
