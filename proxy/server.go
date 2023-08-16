@@ -254,8 +254,9 @@ func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
 		}(p)
 	}
 	for c := 0; c < len(s.pools); c++ {
+		r := <-resps
 		// Return the response only if it has Rcode NoError or NXDomain, otherwise try another pool.
-		if r := <-resps; r != nil && (r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError) {
+		if r != nil && (r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError) {
 			return r
 		}
 	}
