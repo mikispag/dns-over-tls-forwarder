@@ -99,13 +99,11 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 }
 
 // Run runs the server. The server will gracefully shutdown when context is canceled.
-func (s *Server) RunWithHandle(ctx context.Context, addr string, handler func(dns.ResponseWriter, *dns.Msg)) error {
-	mux := dns.NewServeMux()
-	mux.HandleFunc(".", handler)
+func (s *Server) RunWithMux(ctx context.Context, addr string, mux *dns.ServeMux) error {
 
 	servers := []*dns.Server{
-		{Addr: addr, Net: "tcp", Handler: mux, ReusePort: false},
-		//{Addr: addr, Net: "udp", Handler: mux, ReusePort: false},
+		{Addr: addr, Net: "tcp", Handler: mux},
+		{Addr: addr, Net: "udp", Handler: mux},
 	}
 
 	g, ctx := errgroup.WithContext(ctx)

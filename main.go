@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -70,6 +71,7 @@ func main() {
 		mux.Handle("/debug/server/", server.DebugHandler())
 		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
 	}
-
-	log.Fatal(server.RunWithHandle(ctx, *addr, server.ServeDNS))
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", server.ServeDNS)
+	log.Fatal(server.RunWithMux(ctx, *addr, mux))
 }
