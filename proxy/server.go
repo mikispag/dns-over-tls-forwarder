@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gologme/log"
 	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -27,21 +27,23 @@ const (
 
 // Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
 type Server struct {
-	cache *cache
-	pools []*pool
-	rq    chan *dns.Msg
-	dial  func(addr string, cfg *tls.Config) (net.Conn, error)
+	servers []*dns.Server
+	cache   *cache
+	pools   []*pool
+	rq      chan *dns.Msg
+	dial    func(addr string, cfg *tls.Config) (net.Conn, error)
 
 	mu          sync.RWMutex
 	currentTime time.Time
 	startTime   time.Time
+	Log         *log.Logger
 }
 
 // NewServer constructs a new server but does not start it, use Run to start it afterwards.
 // Calling New(0) is valid and comes with working defaults:
 // * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
 // * If no upstream servers are specified default ones will be used.
-func NewServer(cacheSize int, evictMetrics bool, upstreamServers ...string) *Server {
+func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics bool, addr string, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
@@ -53,11 +55,16 @@ func NewServer(cacheSize int, evictMetrics bool, upstreamServers ...string) *Ser
 		log.Fatal("Unable to initialize the cache")
 	}
 	s := &Server{
+		servers: []*dns.Server{
+			{Addr: addr, Net: "tcp", Handler: mux, ReusePort: true},
+			{Addr: addr, Net: "udp", Handler: mux, ReusePort: true},
+		},
 		cache: cache,
 		rq:    make(chan *dns.Msg, refreshQueueSize),
 		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
 			return tls.Dial("tcp", addr, cfg)
 		},
+		Log: log,
 	}
 	if len(upstreamServers) == 0 {
 		s.pools = []*pool{
@@ -69,6 +76,7 @@ func NewServer(cacheSize int, evictMetrics bool, upstreamServers ...string) *Ser
 			s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
 		}
 	}
+	s.Log.Infof("DNS over TLS forwarder listening on %v", addr)
 	return s
 }
 
@@ -83,7 +91,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 		if len(serverComponents) == 2 {
 			servername, port, err := net.SplitHostPort(serverComponents[0])
 			if err != nil {
-				log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
+				s.Log.Warnf("Failed to parse DNS-over-TLS upstream address: %v", err)
 				return nil, err
 			}
 			tlsConf.ServerName = servername
@@ -91,7 +99,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 		}
 		conn, err := s.dial(dialableAddress, tlsConf)
 		if err != nil {
-			log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
+			s.Log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
 			return nil, err
 		}
 		return &dns.Conn{Conn: conn}, nil
@@ -99,49 +107,45 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 }
 
 // Run runs the server. The server will gracefully shutdown when context is canceled.
-func (s *Server) RunWithMux(ctx context.Context, addr string, mux *dns.ServeMux) error {
-
-	servers := []*dns.Server{
-		{Addr: addr, Net: "tcp", Handler: mux},
-		{Addr: addr, Net: "udp", Handler: mux},
-	}
+func (s *Server) Run(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
-
-	go func() {
-		<-ctx.Done()
-		for _, s := range servers {
-			_ = s.Shutdown()
-		}
-		for _, p := range s.pools {
-			p.shutdown()
-		}
-	}()
 
 	go s.refresher(ctx)
 	go s.timer(ctx)
 
-	for _, s := range servers {
+	for _, s := range s.servers {
 		s := s
 		g.Go(func() error { return s.ListenAndServe() })
 	}
 
 	s.startTime = time.Now()
-	log.Infof("DNS over TLS forwarder listening on %v", addr)
 	return g.Wait()
+}
+
+// Shutdown DNS server
+func (s *Server) Shutdown(ctx context.Context) error {
+	<-ctx.Done()
+	for _, s := range s.servers {
+		_ = s.Shutdown()
+	}
+	for _, p := range s.pools {
+		p.shutdown()
+	}
+	return ctx.Err()
 }
 
 // ServeDNS implements miekg/dns.Handler for Server.
 func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 	inboundIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	log.Debugf("Question from %s: %q", inboundIP, q.Question[0])
+	s.Log.Debugf("Question from %s: %q", inboundIP, q.Question[0])
 	m := s.GetAnswer(q)
 	if m == nil {
 		dns.HandleFailed(w, q)
 		return
 	}
 	if err := w.WriteMsg(m); err != nil {
-		log.Warnf("Write message failed, message: %v, error: %v", m, err)
+		s.Log.Warnf("Write message failed, message: %v, error: %v", m, err)
 	}
 }
 
@@ -218,22 +222,24 @@ func (s *Server) timer(ctx context.Context) {
 	}
 }
 
+/*
 func (s *Server) now() time.Time {
 	s.mu.RLock()
 	t := s.currentTime
 	s.mu.RUnlock()
 	return t
 }
+*/
 
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
 	// Let's retry a few times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
-		log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
+		s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
 		m = s.forwardMessageAndGetResponse(q)
 	}
 	if m == nil {
-		log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
+		s.Log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
 		return nil
 	}
 	s.cache.put(q, m)
@@ -268,25 +274,26 @@ func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error
 	if err != nil {
 		return nil, err
 	}
-	_ = c.SetDeadline(s.now().Add(connectionTimeout))
+	//TODO investigate the line below
+	//_ = c.SetDeadline(s.now().Add(connectionTimeout))
 	defer func() {
 		if err == nil {
 			p.put(c)
 		}
 	}()
 	if err := c.WriteMsg(q); err != nil {
-		log.Debugf("Send question message failed: %v", err)
+		s.Log.Debugf("Send question message failed: %v", err)
 		c.Close()
 		return nil, err
 	}
 	resp, err = c.ReadMsg()
 	if err != nil {
-		log.Debugf("Error while reading message: %v", err)
+		s.Log.Debugf("Error while reading message: %v", err)
 		c.Close()
 		return nil, err
 	}
 	if resp == nil {
-		log.Debug(errNilResponse)
+		s.Log.Debug(errNilResponse)
 		c.Close()
 		return nil, errNilResponse
 	}

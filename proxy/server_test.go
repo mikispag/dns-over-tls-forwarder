@@ -6,14 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gologme/log"
 
 	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
@@ -135,10 +137,13 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	// Setup Server
 	ctx, cancel := context.WithCancel(context.Background())
 	{
-		ts.s = NewServer(cacheSize, false, raddr)
+		logger := log.New(os.Stdout, "", log.Flags())
+		mux := dns.NewServeMux()
+		ts.s = NewServer(mux, logger, cacheSize, false, ts.laddr, strings.Split(raddr, ",")...)
+		mux.HandleFunc(".", ts.s.ServeDNS)
 		ts.s.dial = flst.dialer()
 		go func() {
-			if err := ts.s.RunWithHandle(ctx, ts.laddr, ts.s.ServeDNS); err != nil {
+			if err := ts.s.Run(ctx); err != nil {
 				tb.Errorf("Cannot run Server: %v", err)
 			}
 		}()
@@ -249,7 +254,7 @@ func TestDebugHandler(t *testing.T) {
 			if w.Code != 200 {
 				t.Fatalf("HTTP status: got %d want 200", w.Code)
 			}
-			buf, err := ioutil.ReadAll(w.Body)
+			buf, err := io.ReadAll(w.Body)
 			if err != nil {
 				t.Fatalf("Can't read HTTP response: %v", err)
 			}
