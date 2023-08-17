@@ -67,14 +67,12 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 		Log: log,
 	}
 	if len(upstreamServers) == 0 {
-		s.pools = []*pool{
-			newPool(connectionsPerUpstream, s.connector("one.one.one.one:853@1.1.1.1")),
-			newPool(connectionsPerUpstream, s.connector("dns.google:853@8.8.8.8")),
-		}
-	} else {
-		for _, addr := range upstreamServers {
-			s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
-		}
+		upstreamServers = []string{"one.one.one.one:853@1.1.1.1", "dns.google:853@8.8.8.8"}
+		s.Log.Infof("No DNS over TLS server addresses provided. Used default servers.")
+	}
+	for _, addr := range upstreamServers {
+		s.Log.Infof("DNS over TLS address: %v", addr)
+		s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
 	}
 	s.Log.Infof("DNS over TLS forwarder listening on %v", addr)
 	return s
