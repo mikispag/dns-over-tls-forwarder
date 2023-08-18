@@ -21,7 +21,6 @@ import (
 var (
 	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
 	logPath         = flag.String("l", "", "log file path")
-	isLogVerbose    = flag.Bool("v", false, "verbose mode")
 	evictMetrics    = flag.Bool("em", false, "collect metrics on evictions")
 	addr            = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
 	ppr             = flag.Int("pprof", 0, "The port to use for pprof debugging. If set to 0 (default) pprof will not be started.")
@@ -61,7 +60,7 @@ func main() {
 	go func() {
 		<-sigs
 		cancel()
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 	}()
 
 	log.Fatal(server.Run(ctx))
