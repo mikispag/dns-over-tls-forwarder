@@ -3,7 +3,8 @@ module github.com/mikispag/dns-over-tls-forwarder
 go 1.20
 
 require (
-	github.com/miekg/dns v1.1.53
+	github.com/gologme/log v1.3.0
+	github.com/miekg/dns v1.1.55
 	github.com/sirupsen/logrus v1.9.0
 	golang.org/x/sync v0.1.0
 )
