@@ -3,9 +3,9 @@ package proxy
 import (
 	"time"
 
+	"github.com/gologme/log"
 	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
-	log "github.com/sirupsen/logrus"
 )
 
 const (

@@ -5,7 +5,6 @@ go 1.21.0
 require (
 	github.com/gologme/log v1.3.0
 	github.com/miekg/dns v1.1.55
-	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/sync v0.3.0
 )
 
