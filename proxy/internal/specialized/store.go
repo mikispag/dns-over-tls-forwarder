@@ -98,7 +98,7 @@ func (c *store) updateUnchecked(now uint, i int, v Value, startCount uint) {
 }
 
 func (c *store) reset(start uint) uint {
-	if c.cmp == byAccesses {
+	if c.cmp {
 		// MFA doesn't really care about time of access, set everything to 0
 		// and lazily refresh it when the records are actually used.
 		for i := range c.pq {

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -26,7 +25,7 @@ func main() {
 		}
 		out = io.MultiWriter(os.Stdout, f)
 		fmt.Fprintln(out, v)
-		buf, err := ioutil.ReadFile(v)
+		buf, err := os.ReadFile(v)
 		if err != nil {
 			os.Exit(1)
 		}

@@ -7,11 +7,6 @@ import (
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
 
-const (
-	get = false
-	put = true
-)
-
 type testOp struct {
 	op   bool
 	k, v string
@@ -53,7 +48,7 @@ func Fuzz(b []byte) int {
 	var hits, misses uint
 	exp := make(map[string]string)
 	for k, op := range tos {
-		if op.op == put {
+		if op.op {
 			// PUT
 			c.Put(op.k, op.v)
 			Printf("put(%q,%q)", op.k, op.v)

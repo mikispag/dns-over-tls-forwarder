@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http/httptest"
 	"strconv"
@@ -249,7 +248,7 @@ func TestDebugHandler(t *testing.T) {
 			if w.Code != 200 {
 				t.Fatalf("HTTP status: got %d want 200", w.Code)
 			}
-			buf, err := ioutil.ReadAll(w.Body)
+			buf, err := io.ReadAll(w.Body)
 			if err != nil {
 				t.Fatalf("Can't read HTTP response: %v", err)
 			}
