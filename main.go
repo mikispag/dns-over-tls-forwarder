@@ -13,8 +13,9 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/gologme/log"
+	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
-	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -29,18 +30,6 @@ var (
 func main() {
 	flag.Parse()
 
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp:          true,
-		DisableLevelTruncation: true,
-		PadLevelText:           true,
-		TimestampFormat:        "2006-01-02 15:04:05",
-	})
-
-	log.SetLevel(log.InfoLevel)
-	if *isLogVerbose {
-		log.SetLevel(log.DebugLevel)
-	}
-
 	if *logPath != "" {
 		lf, err := os.OpenFile(*logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0640)
 		if err != nil {
@@ -53,16 +42,10 @@ func main() {
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		log.Infof("%s v%s", path.Base(bi.Path), bi.Main.Version)
 	}
-
-	sigs := make(chan os.Signal, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		<-sigs
-		cancel()
-	}()
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
 	// Run the server with a default cache size and the specified upstream servers.
-	server := proxy.NewServer(0, *evictMetrics, strings.Split(*upstreamServers, ",")...)
+	server := proxy.NewServer(mux, logger, 0, *evictMetrics, *addr, strings.Split(*upstreamServers, ",")...)
 
 	if *ppr != 0 {
 		mux := http.NewServeMux()
@@ -70,6 +53,16 @@ func main() {
 		mux.Handle("/debug/server/", server.DebugHandler())
 		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
 	}
+	mux.HandleFunc(".", server.ServeDNS)
 
-	log.Fatal(server.Run(ctx, *addr))
+	sigs := make(chan os.Signal, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-sigs
+		cancel()
+		server.Shutdown(ctx)
+	}()
+
+	log.Fatal(server.Run(ctx))
 }
