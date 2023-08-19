@@ -1,6 +1,6 @@
 module github.com/mikispag/dns-over-tls-forwarder
 
-go 1.21.0
+go 1.21
 
 require (
 	github.com/gologme/log v1.3.0
