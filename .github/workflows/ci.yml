@@ -68,7 +68,55 @@ jobs:
         with:
           go-version: ${{ matrix.goversion }}
 
-      - name: Build RiV-mesh
+      - name: Build
+        run: go build -v ./...
+
+      - name: Unit tests
+        run: go test -v ./...
+
+  build-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        goversion: ["1.21"]
+
+    name: Build & Test (Windows, Go ${{ matrix.goversion }})
+    needs: [lint]
+
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.goversion }}
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Unit tests
+        run: go test -v ./...
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        goversion: ["1.21"]
+
+    name: Build & Test (MacOS, Go ${{ matrix.goversion }})
+    needs: [lint]
+
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.goversion }}
+
+      - name: Build
         run: go build -v ./...
 
       - name: Unit tests
@@ -76,7 +124,7 @@ jobs:
 
   tests-ok:
     name: All tests passed
-    needs: [lint, codeql, build-linux]
+    needs: [lint, codeql, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: ${{ !cancelled() }}
     steps:
