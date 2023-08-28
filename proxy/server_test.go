@@ -157,6 +157,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 
 	return ts, func() {
 		flst.Close()
+		ts.s.Shutdown(ctx)
 		cancel()
 	}
 }
