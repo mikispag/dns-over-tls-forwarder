@@ -157,6 +157,10 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 
 	return ts, func() {
 		flst.Close()
+		err := ts.s.Shutdown(ctx)
+		if err != nil {
+			tb.Errorf("Shutdown Server error: %v", err)
+		}
 		cancel()
 	}
 }

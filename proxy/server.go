@@ -123,7 +123,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 // Shutdown DNS server
 func (s *Server) Shutdown(ctx context.Context) error {
-	<-ctx.Done()
 	for _, s := range s.servers {
 		_ = s.Shutdown()
 	}
