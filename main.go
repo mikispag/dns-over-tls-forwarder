@@ -18,9 +18,17 @@ import (
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 )
 
+const (
+	// Absolute minimum TTL to cache. Overrides the `minTTL` flag.
+	absoluteMinTTL = 60
+	// Absolute maximum TTL to cache, set to 2^31 - 1. See: https://tools.ietf.org/html/rfc1034.
+	absoluteMaxTTL = 2147483647
+)
+
 var (
 	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
 	logPath         = flag.String("l", "", "log file path")
+	minTTL          = flag.Int("minTTL", 60, "Minimum TTL to send to clients. If the TTL provided upstream is smaller, `minTTL` is used.")
 	evictMetrics    = flag.Bool("em", false, "collect metrics on evictions")
 	addr            = flag.String("a", ":53", "the `address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
 	ppr             = flag.Int("pprof", 0, "The port to use for pprof debugging. If set to 0 (default) pprof will not be started.")
@@ -37,6 +45,12 @@ func main() {
 			log.SetOutput(io.MultiWriter(lf, os.Stdout))
 		}
 	}
+	if *minTTL <= absoluteMinTTL {
+		*minTTL = absoluteMinTTL
+	}
+	if *minTTL > absoluteMaxTTL {
+		*minTTL = absoluteMaxTTL
+	}
 
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		log.Infof("%s v%s", path.Base(bi.Path), bi.Main.Version)
@@ -44,7 +58,7 @@ func main() {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	// Run the server with a default cache size and the specified upstream servers.
-	server := proxy.NewServer(mux, logger, 0, *evictMetrics, *addr, strings.Split(*upstreamServers, ",")...)
+	server := proxy.NewServer(mux, logger, 0, *evictMetrics, *minTTL, *addr, strings.Split(*upstreamServers, ",")...)
 
 	if *ppr != 0 {
 		mux := http.NewServeMux()

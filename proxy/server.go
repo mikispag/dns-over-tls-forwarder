@@ -43,14 +43,14 @@ type Server struct {
 // Calling New(0) is valid and comes with working defaults:
 // * If cacheSize is 0 a default value will be used. to disable caches use a negative value.
 // * If no upstream servers are specified default ones will be used.
-func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics bool, addr string, upstreamServers ...string) *Server {
+func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics bool, minTTL int, addr string, upstreamServers ...string) *Server {
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
 	case cacheSize < 0:
 		cacheSize = 0
 	}
-	cache, err := newCache(cacheSize, evictMetrics)
+	cache, err := newCache(cacheSize, evictMetrics, minTTL)
 	if err != nil {
 		log.Fatal("Unable to initialize the cache")
 	}
@@ -81,7 +81,7 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 	return func() (*dns.Conn, error) {
 		tlsConf := &tls.Config{
-			// Force TLS 1.2 as minimum version.
+			// Force TLS 1.3 as minimum version.
 			MinVersion: tls.VersionTLS13,
 		}
 		dialableAddress := upstreamServer

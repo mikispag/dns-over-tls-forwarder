@@ -9,16 +9,13 @@ import (
 )
 
 const (
-	// Minimum TTL to send to clients. If the TTL provided upstream is smaller, `minTTL` is used.
-	minTTL = 5 * time.Minute
 	// Maximum TTL to cache, set to 2^31 - 1. See: https://tools.ietf.org/html/rfc1034.
 	maxTTL = 2147483647 * time.Second
 )
 
 type cache struct {
-	// TODO(empijei): This is too much indirection, it doesn't make sense to just have a pointer to the
-	// actual cache in a pointer to this struct.
-	c *specialized.Cache
+	c      *specialized.Cache
+	minTTL int
 }
 
 type cacheValue struct {
@@ -26,12 +23,12 @@ type cacheValue struct {
 	exp time.Time
 }
 
-func newCache(size int, evictMetrics bool) (*cache, error) {
+func newCache(size int, evictMetrics bool, minTTL int) (*cache, error) {
 	c, err := specialized.NewCache(size, evictMetrics)
 	if err != nil {
 		return nil, err
 	}
-	return &cache{c: c}, nil
+	return &cache{c, minTTL}, nil
 }
 
 func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
@@ -63,8 +60,8 @@ func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 	for _, a := range mv.Answer {
 		ttl := uint32(time.Since(v.exp).Seconds() * -1)
 		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
-		if ttl < uint32(minTTL.Seconds()) {
-			ttl = uint32(minTTL.Seconds())
+		if ttl < uint32(c.minTTL) {
+			ttl = uint32(c.minTTL)
 		}
 		a.Header().Ttl = ttl
 	}
@@ -86,8 +83,8 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	}
 	for _, a := range v.Answer {
 		ttl := time.Duration(a.Header().Ttl) * time.Second
-		if ttl < minTTL {
-			ttl = minTTL
+		if uint32(ttl.Seconds()) < uint32(c.minTTL) {
+			ttl = time.Duration(c.minTTL) * time.Second
 		}
 		exp := now.Add(ttl)
 		if exp.Before(minExpirationTime) {

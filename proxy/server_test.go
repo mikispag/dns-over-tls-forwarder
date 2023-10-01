@@ -139,7 +139,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	{
 		logger := log.New(os.Stdout, "", log.Flags())
 		mux := dns.NewServeMux()
-		ts.s = NewServer(mux, logger, cacheSize, false, ts.laddr, strings.Split(raddr, ",")...)
+		ts.s = NewServer(mux, logger, cacheSize, false, 60, ts.laddr, strings.Split(raddr, ",")...)
 		mux.HandleFunc(".", ts.s.ServeDNS)
 		ts.s.dial = flst.dialer()
 		go func() {
@@ -147,7 +147,6 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 				tb.Errorf("Cannot run Server: %v", err)
 			}
 		}()
-		// TODO find a way to report the server has started
 		time.Sleep(1 * time.Second)
 	}
 
