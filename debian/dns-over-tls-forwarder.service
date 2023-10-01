@@ -3,8 +3,7 @@ Description=DNS-over-TLS forwarder
 After=network.target
 
 [Service]
-User=nobody
-Group=nogroup
+DynamicUser=yes
 LimitNOFILE=32768
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
