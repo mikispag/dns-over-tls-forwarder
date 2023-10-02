@@ -25,6 +25,7 @@ A custom comma-separated list of upstream servers can be specified with the `-s`
 ```console
   -a address:port
     	address:port to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53` (default ":53")
+  -d	print debug log messages
   -em
     	collect metrics on evictions
   -l string

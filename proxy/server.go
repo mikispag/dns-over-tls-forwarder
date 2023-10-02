@@ -32,6 +32,7 @@ type Server struct {
 	pools   []*pool
 	rq      chan *dns.Msg
 	dial    func(addr string, cfg *tls.Config) (net.Conn, error)
+	minTTL  int
 
 	mu          sync.RWMutex
 	currentTime time.Time
@@ -50,7 +51,7 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 	case cacheSize < 0:
 		cacheSize = 0
 	}
-	cache, err := newCache(cacheSize, evictMetrics, minTTL)
+	cache, err := newCache(cacheSize, evictMetrics)
 	if err != nil {
 		log.Fatal("Unable to initialize the cache")
 	}
@@ -64,7 +65,8 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
 			return tls.Dial("tcp", addr, cfg)
 		},
-		Log: log,
+		minTTL: minTTL,
+		Log:    log,
 	}
 	if len(upstreamServers) == 0 {
 		upstreamServers = []string{"one.one.one.one:853@1.1.1.1", "dns.google:853@8.8.8.8"}
@@ -181,7 +183,7 @@ func (s *Server) GetAnswer(q *dns.Msg) *dns.Msg {
 		s.refresh(q)
 		return m
 	}
-	// If there is a cache MISS, forward the message upstream and return the answer.
+	// If there is a cache MISS, forward the message upstream (with TTL rewritten) and return the answer.
 	// miek/dns does not pass a context so we fallback to Background.
 	return s.forwardMessageAndCacheResponse(q)
 }
@@ -219,17 +221,13 @@ func (s *Server) timer(ctx context.Context) {
 	}
 }
 
-/*
-func (s *Server) now() time.Time {
-	s.mu.RLock()
-	t := s.currentTime
-	s.mu.RUnlock()
-	return t
-}
-*/
-
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
+	// Rewrite the TTL.
+	for _, a := range m.Answer {
+		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
+		a.Header().Ttl = uint32(max(a.Header().Ttl, uint32(s.minTTL)))
+	}
 	// Let's retry a few times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
 		s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
@@ -271,8 +269,6 @@ func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error
 	if err != nil {
 		return nil, err
 	}
-	//TODO investigate the line below
-	//_ = c.SetDeadline(s.now().Add(connectionTimeout))
 	defer func() {
 		if err == nil {
 			p.put(c)

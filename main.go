@@ -26,6 +26,7 @@ const (
 )
 
 var (
+	debugLog        = flag.Bool("d", false, "print debug log messages")
 	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
 	logPath         = flag.String("l", "", "log file path")
 	minTTL          = flag.Int("minTTL", 60, "minimum TTL in seconds to send to clients. If the TTL provided upstream is smaller, `minTTL` is used.")
@@ -37,6 +38,9 @@ var (
 func main() {
 	flag.Parse()
 
+	if *debugLog {
+		log.EnableLevel("debug")
+	}
 	if *logPath != "" {
 		lf, err := os.OpenFile(*logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0640)
 		if err != nil {

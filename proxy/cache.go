@@ -14,8 +14,7 @@ const (
 )
 
 type cache struct {
-	c      *specialized.Cache
-	minTTL int
+	c *specialized.Cache
 }
 
 type cacheValue struct {
@@ -23,12 +22,12 @@ type cacheValue struct {
 	exp time.Time
 }
 
-func newCache(size int, evictMetrics bool, minTTL int) (*cache, error) {
+func newCache(size int, evictMetrics bool) (*cache, error) {
 	c, err := specialized.NewCache(size, evictMetrics)
 	if err != nil {
 		return nil, err
 	}
-	return &cache{c, minTTL}, nil
+	return &cache{c}, nil
 }
 
 func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
@@ -58,12 +57,7 @@ func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 	log.Debugf("[CACHE] HIT %q", k)
 	// Rewrite the TTL.
 	for _, a := range mv.Answer {
-		ttl := uint32(time.Since(v.exp).Seconds() * -1)
-		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
-		if ttl < uint32(c.minTTL) {
-			ttl = uint32(c.minTTL)
-		}
-		a.Header().Ttl = ttl
+		a.Header().Ttl = uint32(time.Since(v.exp).Seconds() * -1)
 	}
 	return mv, true
 }
@@ -83,9 +77,6 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	}
 	for _, a := range v.Answer {
 		ttl := time.Duration(a.Header().Ttl) * time.Second
-		if uint32(ttl.Seconds()) < uint32(c.minTTL) {
-			ttl = time.Duration(c.minTTL) * time.Second
-		}
 		exp := now.Add(ttl)
 		if exp.Before(minExpirationTime) {
 			minExpirationTime = exp
