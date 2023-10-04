@@ -223,11 +223,6 @@ func (s *Server) timer(ctx context.Context) {
 
 func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	m = s.forwardMessageAndGetResponse(q)
-	// Rewrite the TTL.
-	for _, a := range m.Answer {
-		// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
-		a.Header().Ttl = uint32(max(a.Header().Ttl, uint32(s.minTTL)))
-	}
 	// Let's retry a few times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
 		s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
@@ -236,6 +231,13 @@ func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 	if m == nil {
 		s.Log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
 		return nil
+	}
+	if m.Answer != nil {
+		// Rewrite the TTL.
+		for _, a := range m.Answer {
+			// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
+			a.Header().Ttl = uint32(max(a.Header().Ttl, uint32(s.minTTL)))
+		}
 	}
 	s.cache.put(q, m)
 	return m
