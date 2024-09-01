@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/gologme/log v1.3.0
 	github.com/miekg/dns v1.1.61
-	golang.org/x/sync v0.7.0
+	golang.org/x/sync v0.8.0
 )
 
 require (
