@@ -3,8 +3,8 @@ package proxy
 import (
 	"time"
 
+	"codeberg.org/miekg/dns"
 	"github.com/gologme/log"
-	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
 
@@ -18,7 +18,7 @@ type cache struct {
 }
 
 type cacheValue struct {
-	m   dns.Msg
+	m   *dns.Msg
 	exp time.Time
 }
 
@@ -42,22 +42,22 @@ func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 		return nil, false
 	}
 	v := r.(cacheValue)
-	mv := v.m.Copy()
+	mv := CloneMsg(v.m)
 	// Rewrite the answer ID to match the question ID.
-	mv.Id = mk.Id
+	mv.ID = mk.ID
 	// If the TTL has expired, speculatively return the cache entry anyway with a short TTL, and refresh it.
 	if v.exp.Before(time.Now().UTC()) {
 		log.Debugf("[CACHE] MISS + REFRESH due to expired TTL for %q", k)
 		// Set a very short TTL
 		for _, a := range mv.Answer {
-			a.Header().Ttl = 60
+			a.Header().TTL = 60
 		}
 		return mv, false
 	}
 	log.Debugf("[CACHE] HIT %q", k)
 	// Rewrite the TTL.
 	for _, a := range mv.Answer {
-		a.Header().Ttl = uint32(time.Since(v.exp).Seconds() * -1)
+		a.Header().TTL = uint32(time.Since(v.exp).Seconds() * -1)
 	}
 	return mv, true
 }
@@ -72,23 +72,21 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 	cacheKey := key(k)
 	// Do not cache DNS errors.
 	if v.Rcode != dns.RcodeSuccess {
-		log.Debugf("[CACHE] Did not cache error answer (%v) for %q", dns.OpcodeToString[v.Rcode], cacheKey)
+		log.Debugf("[CACHE] Did not cache error answer (%v) for %q", dns.RcodeToString[v.Rcode], cacheKey)
 		return
 	}
 	for _, a := range v.Answer {
-		ttl := time.Duration(a.Header().Ttl) * time.Second
+		ttl := time.Duration(a.Header().TTL) * time.Second
 		exp := now.Add(ttl)
 		if exp.Before(minExpirationTime) {
 			minExpirationTime = exp
 		}
 	}
-	cm := v.Copy()
+	cm := CloneMsg(v)
 	// Always set the TC bit to off.
 	cm.Truncated = false
-	// Always compress on the wire.
-	cm.Compress = true
 
-	c.c.Put(cacheKey, cacheValue{m: *cm, exp: minExpirationTime})
+	c.c.Put(cacheKey, cacheValue{m: cm, exp: minExpirationTime})
 }
 
 func key(k *dns.Msg) string {

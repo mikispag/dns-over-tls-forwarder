@@ -13,8 +13,8 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"codeberg.org/miekg/dns"
 	"github.com/gologme/log"
-	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 )
 

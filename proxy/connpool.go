@@ -2,29 +2,28 @@ package proxy
 
 import (
 	"errors"
+	"net"
 	"sync"
-
-	"github.com/miekg/dns"
 )
 
-type connector func() (*dns.Conn, error)
+type connector func() (net.Conn, error)
 
 type pool struct {
 	c connector
 
 	mu     sync.RWMutex
 	closed bool
-	buf    chan *dns.Conn
+	buf    chan net.Conn
 }
 
 func newPool(size int, c connector) *pool {
 	return &pool{
-		buf: make(chan *dns.Conn, size),
+		buf: make(chan net.Conn, size),
 		c:   c,
 	}
 }
 
-func (p *pool) get() (*dns.Conn, error) {
+func (p *pool) get() (net.Conn, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
@@ -39,7 +38,7 @@ func (p *pool) get() (*dns.Conn, error) {
 	}
 }
 
-func (p *pool) put(c *dns.Conn) {
+func (p *pool) put(c net.Conn) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {

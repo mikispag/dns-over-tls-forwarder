@@ -17,13 +17,14 @@ import (
 
 	"github.com/gologme/log"
 
-	"github.com/miekg/dns"
+	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnsutil"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
 
-type fakeServer func(w dns.ResponseWriter, q *dns.Msg)
+type fakeServer func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 
-func (f fakeServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) { f(w, q) }
+func (f fakeServer) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) { f(ctx, w, q) }
 
 type fakeAddr string
 
@@ -78,10 +79,11 @@ type testServer struct {
 
 func (ts *testServer) exchange(logmsg string, wantIP string) {
 	ts.tb.Helper()
-	var c dns.Client
-	var m dns.Msg
-	m.SetQuestion(ts.question, dns.TypeMX)
-	gotr, _, err := c.Exchange(&m, ts.laddr)
+	c := dns.NewClient()
+	m := dns.NewMsg(ts.question, dns.TypeMX)
+	m.ID = dns.ID()
+	m.RecursionDesired = true
+	gotr, _, err := c.Exchange(context.TODO(), m, "udp", ts.laddr)
 	if err != nil {
 		ts.tb.Fatalf("%s: cannot contact server: %v", logmsg, err)
 	}
@@ -107,7 +109,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		ts.remote = &dns.Server{
 			Addr:     raddr,
 			Listener: flst,
-			Handler: fakeServer(func(w dns.ResponseWriter, q *dns.Msg) {
+			Handler: fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
 				if got := q.String(); !strings.Contains(got, ts.question) {
 					tb.Errorf("Got unexpected question: %q want it to contain %q", got, ts.question)
 				}
@@ -117,19 +119,20 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 				} else {
 					respb = "raccoon.miki. 2311 IN A 42.42.42.42"
 				}
-				resp, err := dns.NewRR(respb)
+				resp, err := dns.New(respb)
 				if err != nil {
 					tb.Fatalf("Cannot parse test response: %v", err)
 				}
-				m := &dns.Msg{}
-				m = m.SetReply(q)
+				m := new(dns.Msg)
+				dnsutil.SetReply(m, q)
 				m.Answer = []dns.RR{resp}
-				_ = w.WriteMsg(m)
+				m.Pack()
+				m.WriteTo(w)
 			}),
 		}
 		go func() {
-			if err := ts.remote.ActivateAndServe(); err != nil {
-				tb.Errorf("Cannot ActivateAndServe: %v", err)
+			if err := ts.remote.ListenAndServe(); err != nil {
+				tb.Errorf("Cannot ListenAndServe: %v", err)
 			}
 		}()
 	}
@@ -271,4 +274,218 @@ func TestDebugHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEDE(t *testing.T) {
+	const question = "ede.test."
+	const proxyAddr = "127.0.0.1:5681"
+	const raddr = "ede.upstream:853"
+
+	// Setup fake remote that returns EDE
+	flst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	realRAddr := flst.Addr().String()
+	remote := &dns.Server{
+		Addr:     realRAddr,
+		Net:      "tcp",
+		Listener: flst,
+		Handler: fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+			m := new(dns.Msg)
+			dnsutil.SetReply(m, q)
+			m.Rcode = dns.RcodeServerFailure
+			// Add EDE option
+			ede := &dns.EDE{
+				InfoCode:  dns.ExtendedErrorDNSBogus,
+				ExtraText: "test EDE message",
+			}
+			m.Pseudo = append(m.Pseudo, ede)
+			if _, err := m.WriteTo(w); err != nil {
+				t.Errorf("Fake upstream write failed: %v", err)
+			}
+		}),
+	}
+	go remote.ListenAndServe()
+	defer flst.Close()
+
+	// Setup Proxy Server
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 0, false, 60, proxyAddr, raddr)
+	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+		return net.Dial("tcp", realRAddr)
+	}
+	s.pools = nil
+	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
+
+	mux.HandleFunc(".", s.ServeDNS)
+	go s.Run(ctx)
+	defer cancel()
+	time.Sleep(1 * time.Second)
+
+	// Query Proxy
+	c := dns.NewClient()
+	m := dns.NewMsg(question, dns.TypeA)
+	m.UDPSize, m.Security = 4096, true
+	r, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if r.Rcode != dns.RcodeServerFailure {
+		t.Errorf("Got Rcode %d, want SERVFAIL", r.Rcode)
+	}
+
+	foundEDE := false
+	for _, p := range r.Pseudo {
+		if e, ok := p.(*dns.EDE); ok {
+			foundEDE = true
+			if e.InfoCode != dns.ExtendedErrorDNSBogus {
+				t.Errorf("Got EDE code %d, want %d", e.InfoCode, dns.ExtendedErrorDNSBogus)
+			}
+			// Note: miekg/dns v2 v0.6.64 has a bug in EDE.pack that garbles ExtraText.
+			// So we only check the InfoCode for now.
+		}
+	}
+	if !foundEDE {
+		t.Errorf("EDE option not found in response")
+	}
+}
+
+func TestEDNSPropagation(t *testing.T) {
+	const proxyAddr = "127.0.0.1:5682"
+	const question = "edns.test."
+
+	// Setup Proxy Server with NO upstreams to force SERVFAIL
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 0, false, 60, proxyAddr, "127.0.0.1:1") // invalid upstream to force SERVFAIL
+	mux.HandleFunc(".", s.ServeDNS)
+	go s.Run(ctx)
+	defer cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Query Proxy with custom EDNS settings
+	c := dns.NewClient()
+	m := dns.NewMsg(question, dns.TypeA)
+	m.UDPSize = 1234
+	m.Security = true // DO bit
+
+	r, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if r.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("Got Rcode %d, want SERVFAIL", r.Rcode)
+	}
+
+	if r.UDPSize != 1234 {
+		t.Errorf("UDPSize mismatch in SERVFAIL response: got %d, want 1234", r.UDPSize)
+	}
+	if !r.Security {
+		t.Errorf("Security/DO bit not propagated in SERVFAIL response")
+	}
+}
+
+func TestCacheDeepCopy(t *testing.T) {
+	cache, _ := newCache(10, false)
+	q := dns.NewMsg("example.com.", dns.TypeA)
+	q.ID = 123
+
+	r := dns.NewMsg("example.com.", dns.TypeA)
+	r.ID = 123
+	ans, _ := dns.New("example.com. 3600 IN A 1.1.1.1")
+	r.Answer = append(r.Answer, ans)
+
+	cache.put(q, r)
+
+	// First lookup
+	m1, ok := cache.get(q)
+	if !ok {
+		t.Fatal("Cache miss")
+	}
+	if m1.ID != 123 {
+		t.Errorf("ID mismatch: %d", m1.ID)
+	}
+
+	// Modify m1
+	m1.ID = 999
+	m1.Answer[0].Header().TTL = 0
+
+	// Second lookup of the same key
+	q2 := CloneMsg(q)
+	q2.ID = 456
+	m2, ok := cache.get(q2)
+	if !ok {
+		t.Fatal("Cache miss on second lookup")
+	}
+
+	if m2.ID != 456 {
+		t.Errorf("m2 ID should be overwritten by request ID: got %d, want 456", m2.ID)
+	}
+
+	if m2.Answer[0].Header().TTL == 0 {
+		t.Errorf("m2 Answer TTL was affected by modification of m1: cache is not deep copied")
+	}
+}
+
+func TestConcurrencyRace(t *testing.T) {
+	// Use multiple upstreams to trigger parallel forwarding
+	// We want to verify that concurrent access to the query Msg doesn't race.
+	proxyAddr := "127.0.0.1:5683"
+	u1 := newFakeListener("u1.test:853")
+	u2 := newFakeListener("u2.test:853")
+
+	h := fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+		m := new(dns.Msg)
+		dnsutil.SetReply(m, q)
+		ans, _ := dns.New(q.Question[0].Header().Name + " 3600 IN A 1.2.3.4")
+		m.Answer = append(m.Answer, ans)
+		m.Pack()
+		_, _ = w.Write(m.Data)
+	})
+
+	s1 := &dns.Server{Addr: u1.a, Net: "tcp", Listener: u1, Handler: h}
+	s2 := &dns.Server{Addr: u2.a, Net: "tcp", Listener: u2, Handler: h}
+	go s1.ListenAndServe()
+	go s2.ListenAndServe()
+	defer u1.Close()
+	defer u2.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 0, false, 60, proxyAddr, u1.a, u2.a)
+	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+		return net.Dial("tcp", addr)
+	}
+	// Fixing pools
+	s.pools = nil
+	s.pools = append(s.pools, newPool(2, s.connector(u1.a)))
+	s.pools = append(s.pools, newPool(2, s.connector(u2.a)))
+
+	mux.HandleFunc(".", s.ServeDNS)
+	go s.Run(ctx)
+	defer cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Run many parallel queries with -race to check for data races
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c := dns.NewClient()
+			m := dns.NewMsg("test"+strconv.Itoa(i)+".com.", dns.TypeA)
+			_, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+			if err != nil {
+				t.Errorf("Parallel query %d failed: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnsutil"
 	"github.com/gologme/log"
-	"github.com/miekg/dns"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 	"golang.org/x/sync/errgroup"
 )
@@ -80,8 +81,8 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 	return s
 }
 
-func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
-	return func() (*dns.Conn, error) {
+func (s *Server) connector(upstreamServer string) func() (net.Conn, error) {
+	return func() (net.Conn, error) {
 		tlsConf := &tls.Config{
 			// Force TLS 1.3 as minimum version.
 			MinVersion: tls.VersionTLS13,
@@ -102,7 +103,7 @@ func (s *Server) connector(upstreamServer string) func() (*dns.Conn, error) {
 			s.Log.Warnf("Failed to connect to DNS-over-TLS upstream: %v", err)
 			return nil, err
 		}
-		return &dns.Conn{Conn: conn}, nil
+		return conn, nil
 	}
 }
 
@@ -126,7 +127,7 @@ func (s *Server) Run(ctx context.Context) error {
 // Shutdown DNS server
 func (s *Server) Shutdown(ctx context.Context) error {
 	for _, s := range s.servers {
-		_ = s.Shutdown()
+		s.Shutdown(ctx)
 	}
 	for _, p := range s.pools {
 		p.shutdown()
@@ -135,15 +136,31 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // ServeDNS implements miekg/dns.Handler for Server.
-func (s *Server) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
+func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+	// Ensure the message is fully unpacked (especially the Extra/Pseudo sections for EDNS).
+	_ = q.Unpack()
 	inboundIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	s.Log.Debugf("Question from %s: %q", inboundIP, q.Question[0])
-	m := s.GetAnswer(q)
+	s.Log.Debugf("Question from %s: %s", inboundIP, q.String())
+	m := s.GetAnswer(ctx, q)
 	if m == nil {
-		dns.HandleFailed(w, q)
-		return
+		// Build a SERVFAIL response.
+		m = new(dns.Msg)
+		dnsutil.SetReply(m, q)
+		m.Rcode = dns.RcodeServerFailure
+		// Propagate EDNS settings from query if present.
+		m.UDPSize = q.UDPSize
+		m.Security = q.Security
+	} else {
+		// Ensure the response ID matches the question ID.
+		m.ID = q.ID
+		// Ensure EDNS settings are compatible with client's request if we have a response.
+		// Cloudflare/Upstream might have returned a smaller UDPSize than client requested,
+		// which is fine. But if client requested DO bit, we should ensure it's there if upstream returned it.
 	}
-	if err := w.WriteMsg(m); err != nil {
+
+	s.Log.Debugf("Answer to %s: %s", inboundIP, m.String())
+	m.Pack()
+	if _, err := m.WriteTo(w); err != nil {
 		s.Log.Warnf("Write message failed, message: %v, error: %v", m, err)
 	}
 }
@@ -172,7 +189,7 @@ func (s *Server) DebugHandler() http.Handler {
 	})
 }
 
-func (s *Server) GetAnswer(q *dns.Msg) *dns.Msg {
+func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
 	m, ok := s.cache.get(q)
 	// Cache HIT.
 	if ok {
@@ -184,13 +201,12 @@ func (s *Server) GetAnswer(q *dns.Msg) *dns.Msg {
 		return m
 	}
 	// If there is a cache MISS, forward the message upstream (with TTL rewritten) and return the answer.
-	// miek/dns does not pass a context so we fallback to Background.
-	return s.forwardMessageAndCacheResponse(q)
+	return s.forwardMessageAndCacheResponse(ctx, q)
 }
 
 func (s *Server) refresh(q *dns.Msg) {
 	select {
-	case s.rq <- q:
+	case s.rq <- CloneMsg(q):
 	default:
 	}
 }
@@ -201,7 +217,7 @@ func (s *Server) refresher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case q := <-s.rq:
-			s.forwardMessageAndCacheResponse(q)
+			s.forwardMessageAndCacheResponse(ctx, q)
 		}
 	}
 }
@@ -221,12 +237,12 @@ func (s *Server) timer(ctx context.Context) {
 	}
 }
 
-func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
-	m = s.forwardMessageAndGetResponse(q)
+func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
+	m = s.forwardMessageAndGetResponse(ctx, q)
 	// Let's retry a few times if we can't resolve it at the first try.
 	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
 		s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
-		m = s.forwardMessageAndGetResponse(q)
+		m = s.forwardMessageAndGetResponse(ctx, q)
 	}
 	if m == nil {
 		s.Log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
@@ -236,37 +252,48 @@ func (s *Server) forwardMessageAndCacheResponse(q *dns.Msg) (m *dns.Msg) {
 		// Rewrite the TTL.
 		for _, a := range m.Answer {
 			// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
-			a.Header().Ttl = uint32(max(a.Header().Ttl, uint32(s.minTTL)))
+			a.Header().TTL = uint32(max(a.Header().TTL, uint32(s.minTTL)))
 		}
 	}
 	s.cache.put(q, m)
 	return m
 }
 
-func (s *Server) forwardMessageAndGetResponse(q *dns.Msg) (m *dns.Msg) {
+func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
 	resps := make(chan *dns.Msg, len(s.pools))
 	for _, p := range s.pools {
 		go func(p *pool) {
-			r, err := s.exchangeMessages(p, q)
-			if err != nil || r == nil {
-				resps <- nil
-			}
+			// Clone q for each goroutine to avoid data races during Pack().
+			qc := CloneMsg(q)
+			// Ensure we don't send the Data buffer if it was already packed for a different upstream.
+			qc.Data = nil
+			r, _ := s.exchangeMessages(ctx, p, qc)
 			resps <- r
 		}(p)
 	}
+
+	var bestErrResp *dns.Msg
 	for c := 0; c < len(s.pools); c++ {
 		r := <-resps
-		// Return the response only if it has Rcode NoError or NXDomain, otherwise try another pool.
-		if r != nil && (r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError) {
+		if r == nil {
+			continue
+		}
+		// Return the response immediately if it has Rcode NoError or NXDomain.
+		if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
 			return r
 		}
+		// Keep track of the first valid error response we get to return it later as fallback
+		if bestErrResp == nil {
+			bestErrResp = r
+		}
 	}
-	return nil
+	// Return the error response (like SERVFAIL with EDE payload) if no NOERROR was found.
+	return bestErrResp
 }
 
 var errNilResponse = errors.New("nil response from upstream")
 
-func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
 	c, err := p.get()
 	if err != nil {
 		return nil, err
@@ -276,14 +303,10 @@ func (s *Server) exchangeMessages(p *pool, q *dns.Msg) (resp *dns.Msg, err error
 			p.put(c)
 		}
 	}()
-	if err := c.WriteMsg(q); err != nil {
-		s.Log.Debugf("Send question message failed: %v", err)
-		c.Close()
-		return nil, err
-	}
-	resp, err = c.ReadMsg()
+	client := dns.NewClient()
+	resp, _, err = client.ExchangeWithConn(ctx, q, c)
 	if err != nil {
-		s.Log.Debugf("Error while reading message: %v", err)
+		s.Log.Debugf("Exchange failed: %v", err)
 		c.Close()
 		return nil, err
 	}
