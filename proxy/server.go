@@ -114,22 +114,74 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.refresher(ctx)
 	go s.timer(ctx)
 
+	// We use a WaitGroup to ensure servers have started before we allow Shutdown to be called.
+	// This avoids internal data races in the library between starting and stopping.
+	var startWg sync.WaitGroup
+	startWg.Add(len(s.servers))
+
 	for _, srv := range s.servers {
 		srv := srv
+		// NotifyStartedFunc is called by the library once the server is listening.
+		srv.NotifyStartedFunc = func(ctx context.Context) {
+			startWg.Done()
+		}
+
+		// Pre-listen to avoid internal library data races on the Listener/PacketConn fields.
+		if srv.Net == "tcp" || srv.Net == "tcp-tls" {
+			if srv.Listener == nil {
+				l, err := net.Listen("tcp", srv.Addr)
+				if err != nil {
+					return err
+				}
+				srv.Listener = l
+			}
+			s.mu.Lock()
+			srv.Addr = srv.Listener.Addr().String()
+			s.mu.Unlock()
+		} else if srv.Net == "udp" {
+			if srv.PacketConn == nil {
+				pc, err := net.ListenPacket("udp", srv.Addr)
+				if err != nil {
+					return err
+				}
+				srv.PacketConn = pc
+			}
+			s.mu.Lock()
+			srv.Addr = srv.PacketConn.LocalAddr().String()
+			s.mu.Unlock()
+		}
+
 		g.Go(func() error { return srv.ListenAndServe() })
 	}
 
+	// Capture the startWg so we can wait for it safely.
+	started := make(chan struct{})
+	go func() {
+		startWg.Wait()
+		close(started)
+	}()
+
 	// Gracefully shutdown when context is canceled.
-	// This goroutine ensures s.Shutdown is called exactly once from the lifecycle of Run.
 	go func() {
 		<-ctx.Done()
-		// Small delay to allow servers to finish their initial setup.
-		time.Sleep(500 * time.Millisecond)
+		// Wait for all servers to have finished their startup sequence.
+		select {
+		case <-started:
+			// Additional safety delay for internal library state stabilization.
+			time.Sleep(500 * time.Millisecond)
+		case <-time.After(5 * time.Second):
+		}
 		_ = s.Shutdown(context.Background())
 	}()
 
+	s.mu.Lock()
 	s.startTime = time.Now()
-	return g.Wait()
+	s.mu.Unlock()
+	err := g.Wait()
+	for _, p := range s.pools {
+		p.shutdown()
+	}
+	return err
 }
 
 // Shutdown DNS server.
@@ -186,11 +238,14 @@ type debugStats struct {
 func (s *Server) DebugHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		s.mu.Lock()
+		uptime := time.Since(s.startTime).String()
+		s.mu.Unlock()
 		buf, err := json.MarshalIndent(debugStats{
 			s.cache.c.Metrics(),
 			s.cache.c.Len(),
 			s.cache.c.Cap(),
-			time.Since(s.startTime).String(),
+			uptime,
 		}, "", " ")
 		if err != nil {
 			http.Error(w, "Unable to retrieve debug info", http.StatusInternalServerError)

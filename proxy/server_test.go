@@ -100,7 +100,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	ts = &testServer{
 		tb:       tb,
 		question: "raccoon.miki.",
-		laddr:    "127.0.0.1:5678",
+		laddr:    "127.0.0.1:0",
 	}
 
 	// Setup fake remote
@@ -130,9 +130,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 				_, _ = m.WriteTo(w)
 			}),
 		}
-		go func() {
-			_ = ts.remote.ListenAndServe()
-		}()
+		go func() { _ = ts.remote.ListenAndServe() }()
 	}
 
 	// Setup Server
@@ -144,7 +142,24 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		mux.HandleFunc(".", ts.s.ServeDNS)
 		ts.s.dial = flst.dialer()
 		go func() { _ = ts.s.Run(ctx) }()
-		time.Sleep(500 * time.Millisecond)
+
+		// Wait for the server to bind and update its address
+		started := false
+		for i := 0; i < 50; i++ {
+			ts.s.mu.Lock()
+			if len(ts.s.servers) > 1 && !strings.HasSuffix(ts.s.servers[1].Addr, ":0") {
+				ts.laddr = ts.s.servers[1].Addr
+				started = true
+			}
+			ts.s.mu.Unlock()
+			if started {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !started {
+			tb.Fatal("Server failed to start and bind within timeout")
+		}
 	}
 
 	if tb.Failed() {
@@ -268,7 +283,6 @@ func TestDebugHandler(t *testing.T) {
 
 func TestEDE(t *testing.T) {
 	const question = "ede.test."
-	const proxyAddr = "127.0.0.1:5681"
 	const raddr = "ede.upstream:853"
 
 	// Setup fake remote that returns EDE
@@ -303,7 +317,7 @@ func TestEDE(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, proxyAddr, raddr)
+	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
 	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
@@ -313,13 +327,29 @@ func TestEDE(t *testing.T) {
 	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
-	time.Sleep(1 * time.Second)
+
+	// Wait for the server to bind and update its address
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if actualProxyAddr == "" {
+		t.Fatal("Proxy failed to start and bind within timeout")
+	}
 
 	// Query Proxy
 	c := dns.NewClient()
 	m := dns.NewMsg(question, dns.TypeA)
 	m.UDPSize, m.Security = 4096, true
-	r, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+	r, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -345,18 +375,33 @@ func TestEDE(t *testing.T) {
 }
 
 func TestEDNSPropagation(t *testing.T) {
-	const proxyAddr = "127.0.0.1:5682"
 	const question = "edns.test."
 
 	// Setup Proxy Server with NO upstreams to force SERVFAIL
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, proxyAddr, "127.0.0.1:1") // invalid upstream to force SERVFAIL
+	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", "127.0.0.1:1") // invalid upstream to force SERVFAIL
 	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
-	time.Sleep(100 * time.Millisecond)
+
+	// Wait for the server to bind and update its address
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if actualProxyAddr == "" {
+		t.Fatal("Proxy failed to start and bind within timeout")
+	}
 
 	// Query Proxy with custom EDNS settings
 	c := dns.NewClient()
@@ -364,7 +409,7 @@ func TestEDNSPropagation(t *testing.T) {
 	m.UDPSize = 1234
 	m.Security = true // DO bit
 
-	r, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+	r, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -426,7 +471,6 @@ func TestCacheDeepCopy(t *testing.T) {
 func TestConcurrencyRace(t *testing.T) {
 	// Use multiple upstreams to trigger parallel forwarding
 	// We want to verify that concurrent access to the query Msg doesn't race.
-	proxyAddr := "127.0.0.1:5683"
 	u1 := newFakeListener("u1.test:853")
 	u2 := newFakeListener("u2.test:853")
 
@@ -449,7 +493,7 @@ func TestConcurrencyRace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, proxyAddr, u1.a, u2.a)
+	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", u1.a, u2.a)
 	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", addr)
 	}
@@ -461,7 +505,23 @@ func TestConcurrencyRace(t *testing.T) {
 	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
-	time.Sleep(100 * time.Millisecond)
+
+	// Wait for the server to bind and update its address
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if actualProxyAddr == "" {
+		t.Fatal("Proxy failed to start and bind within timeout")
+	}
 
 	// Run many parallel queries with -race to check for data races
 	var wg sync.WaitGroup
@@ -471,7 +531,7 @@ func TestConcurrencyRace(t *testing.T) {
 			defer wg.Done()
 			c := dns.NewClient()
 			m := dns.NewMsg("test"+strconv.Itoa(i)+".com.", dns.TypeA)
-			_, _, err := c.Exchange(context.TODO(), m, "udp", proxyAddr)
+			_, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
 			if err != nil {
 				t.Errorf("Parallel query %d failed: %v", i, err)
 			}
