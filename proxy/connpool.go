@@ -48,7 +48,7 @@ func (p *pool) put(c net.Conn) {
 	select {
 	case p.buf <- c:
 	default:
-		c.Close()
+		_ = c.Close()
 	}
 }
 
@@ -59,6 +59,6 @@ func (p *pool) shutdown() {
 
 	close(p.buf)
 	for c := range p.buf {
-		c.Close()
+		_ = c.Close()
 	}
 }

@@ -126,8 +126,8 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 				m := new(dns.Msg)
 				dnsutil.SetReply(m, q)
 				m.Answer = []dns.RR{resp}
-				m.Pack()
-				m.WriteTo(w)
+				_ = m.Pack()
+				_, _ = m.WriteTo(w)
 			}),
 		}
 		go func() {
@@ -158,7 +158,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	}
 
 	return ts, func() {
-		flst.Close()
+		_ = flst.Close()
 		err := ts.s.Shutdown(ctx)
 		if err != nil {
 			tb.Errorf("Shutdown Server error: %v", err)
@@ -306,8 +306,8 @@ func TestEDE(t *testing.T) {
 			}
 		}),
 	}
-	go remote.ListenAndServe()
-	defer flst.Close()
+	go func() { _ = remote.ListenAndServe() }()
+	defer func() { _ = flst.Close() }()
 
 	// Setup Proxy Server
 	ctx, cancel := context.WithCancel(context.Background())
@@ -321,7 +321,7 @@ func TestEDE(t *testing.T) {
 	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
 
 	mux.HandleFunc(".", s.ServeDNS)
-	go s.Run(ctx)
+	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 	time.Sleep(1 * time.Second)
 
@@ -364,7 +364,7 @@ func TestEDNSPropagation(t *testing.T) {
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 0, false, 60, proxyAddr, "127.0.0.1:1") // invalid upstream to force SERVFAIL
 	mux.HandleFunc(".", s.ServeDNS)
-	go s.Run(ctx)
+	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 	time.Sleep(100 * time.Millisecond)
 
@@ -445,16 +445,16 @@ func TestConcurrencyRace(t *testing.T) {
 		dnsutil.SetReply(m, q)
 		ans, _ := dns.New(q.Question[0].Header().Name + " 3600 IN A 1.2.3.4")
 		m.Answer = append(m.Answer, ans)
-		m.Pack()
+		_ = m.Pack()
 		_, _ = w.Write(m.Data)
 	})
 
 	s1 := &dns.Server{Addr: u1.a, Net: "tcp", Listener: u1, Handler: h}
 	s2 := &dns.Server{Addr: u2.a, Net: "tcp", Listener: u2, Handler: h}
-	go s1.ListenAndServe()
-	go s2.ListenAndServe()
-	defer u1.Close()
-	defer u2.Close()
+	go func() { _ = s1.ListenAndServe() }()
+	go func() { _ = s2.ListenAndServe() }()
+	defer func() { _ = u1.Close() }()
+	defer func() { _ = u2.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
@@ -469,7 +469,7 @@ func TestConcurrencyRace(t *testing.T) {
 	s.pools = append(s.pools, newPool(2, s.connector(u2.a)))
 
 	mux.HandleFunc(".", s.ServeDNS)
-	go s.Run(ctx)
+	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 	time.Sleep(100 * time.Millisecond)
 

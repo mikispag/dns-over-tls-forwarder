@@ -159,7 +159,7 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	}
 
 	s.Log.Debugf("Answer to %s: %s", inboundIP, m.String())
-	m.Pack()
+	_ = m.Pack()
 	if _, err := m.WriteTo(w); err != nil {
 		s.Log.Warnf("Write message failed, message: %v, error: %v", m, err)
 	}
@@ -307,12 +307,12 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 	resp, _, err = client.ExchangeWithConn(ctx, q, c)
 	if err != nil {
 		s.Log.Debugf("Exchange failed: %v", err)
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	if resp == nil {
 		s.Log.Debug(errNilResponse)
-		c.Close()
+		_ = c.Close()
 		return nil, errNilResponse
 	}
 	return resp, err

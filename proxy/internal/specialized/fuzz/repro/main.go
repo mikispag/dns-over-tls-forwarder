@@ -13,8 +13,8 @@ import (
 func main() {
 	var out io.Writer
 	fuzz.Printf = func(f string, d ...interface{}) {
-		fmt.Fprintf(out, f, d...)
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintf(out, f, d...)
+		_, _ = fmt.Fprintln(out)
 	}
 
 	for _, v := range os.Args[1:] {
@@ -24,12 +24,12 @@ func main() {
 			log.Fatalf("cannot open output file: %q", fname)
 		}
 		out = io.MultiWriter(os.Stdout, f)
-		fmt.Fprintln(out, v)
+		_, _ = fmt.Fprintln(out, v)
 		buf, err := os.ReadFile(v)
 		if err != nil {
 			os.Exit(1)
 		}
 		fuzz.Fuzz(buf)
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 	}
 }
