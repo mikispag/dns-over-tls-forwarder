@@ -131,9 +131,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 			}),
 		}
 		go func() {
-			if err := ts.remote.ListenAndServe(); err != nil {
-				// Ignore errors from closing during shutdown
-			}
+			_ = ts.remote.ListenAndServe()
 		}()
 	}
 

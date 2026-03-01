@@ -125,7 +125,7 @@ func (s *Server) Run(ctx context.Context) error {
 		<-ctx.Done()
 		// Small delay to allow servers to finish their initial setup.
 		time.Sleep(500 * time.Millisecond)
-		s.Shutdown(context.Background())
+		_ = s.Shutdown(context.Background())
 	}()
 
 	s.startTime = time.Now()
