@@ -55,6 +55,9 @@ func (p *pool) put(c net.Conn) {
 func (p *pool) shutdown() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
 	p.closed = true
 
 	close(p.buf)

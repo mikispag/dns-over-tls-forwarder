@@ -109,25 +109,36 @@ func (s *Server) connector(upstreamServer string) func() (net.Conn, error) {
 
 // Run runs the server. The server will gracefully shutdown when context is canceled.
 func (s *Server) Run(ctx context.Context) error {
-
 	g, ctx := errgroup.WithContext(ctx)
 
 	go s.refresher(ctx)
 	go s.timer(ctx)
 
-	for _, s := range s.servers {
-		s := s
-		g.Go(func() error { return s.ListenAndServe() })
+	for _, srv := range s.servers {
+		srv := srv
+		g.Go(func() error { return srv.ListenAndServe() })
 	}
+
+	// Gracefully shutdown when context is canceled.
+	// This goroutine ensures s.Shutdown is called exactly once from the lifecycle of Run.
+	go func() {
+		<-ctx.Done()
+		// Small delay to allow servers to finish their initial setup.
+		time.Sleep(500 * time.Millisecond)
+		s.Shutdown(context.Background())
+	}()
 
 	s.startTime = time.Now()
 	return g.Wait()
 }
 
-// Shutdown DNS server
+// Shutdown DNS server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	for _, s := range s.servers {
-		s.Shutdown(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, srv := range s.servers {
+		srv.Shutdown(ctx)
 	}
 	for _, p := range s.pools {
 		p.shutdown()

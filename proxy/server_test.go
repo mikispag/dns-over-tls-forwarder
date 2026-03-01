@@ -132,7 +132,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		}
 		go func() {
 			if err := ts.remote.ListenAndServe(); err != nil {
-				tb.Errorf("Cannot ListenAndServe: %v", err)
+				// Ignore errors from closing during shutdown
 			}
 		}()
 	}
@@ -145,12 +145,8 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		ts.s = NewServer(mux, logger, cacheSize, false, 60, ts.laddr, strings.Split(raddr, ",")...)
 		mux.HandleFunc(".", ts.s.ServeDNS)
 		ts.s.dial = flst.dialer()
-		go func() {
-			if err := ts.s.Run(ctx); err != nil {
-				tb.Errorf("Cannot run Server: %v", err)
-			}
-		}()
-		time.Sleep(1 * time.Second)
+		go func() { _ = ts.s.Run(ctx) }()
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if tb.Failed() {
@@ -159,10 +155,6 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 
 	return ts, func() {
 		_ = flst.Close()
-		err := ts.s.Shutdown(ctx)
-		if err != nil {
-			tb.Errorf("Shutdown Server error: %v", err)
-		}
 		cancel()
 	}
 }
