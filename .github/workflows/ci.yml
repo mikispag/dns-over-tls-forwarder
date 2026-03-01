@@ -26,8 +26,9 @@ jobs:
           go-version: 'stable'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
+          version: latest
           # Show only issues introduced in the PR, but keep CI strict
           only-new-issues: false
           args: --timeout=5m
