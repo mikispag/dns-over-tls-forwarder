@@ -1,4 +1,5 @@
 name: ci
+
 on:
   push:
     branches:
@@ -10,24 +11,42 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-      - name: lint
-        uses: golangci/golangci-lint-action@v3
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
         with:
-          version: 'latest'
-          only-new-issues: true
-          args: --issues-exit-code=1 --out-format=colored-line-number
+          version: v1.64
+          # Show only issues introduced in the PR, but keep CI strict
+          only-new-issues: false
+          args: --timeout=5m
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+      - name: Run govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
 
   codeql:
-    name: Analyse
+    name: CodeQL analysis
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -36,96 +55,58 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
+        uses: github/codeql-action/init@v3
         with:
           languages: go
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v2
+        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+        uses: github/codeql-action/analyze@v3
 
-  build-linux:
+  test:
+    needs: [lint]
     strategy:
       fail-fast: false
       matrix:
-        goversion: ['stable']
-
-    name: Build & Test (Linux, Go ${{ matrix.goversion }})
-    needs: [lint]
-
-    runs-on: ubuntu-latest
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: ['stable', 'oldstable']
+    runs-on: ${{ matrix.os }}
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.goversion }}
-
-      - name: Build
+          go-version: ${{ matrix.go }}
+          cache: true
+      
+      - name: Go build
         run: go build -v ./...
-
-      - name: Unit tests
-        run: go test -v ./...
-
-  build-windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        goversion: ['stable']
-
-    name: Build & Test (Windows, Go ${{ matrix.goversion }})
-    needs: [lint]
-
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ matrix.goversion }}
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Unit tests
-        run: go test -v ./...
-
-  build-macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        goversion: ['stable']
-
-    name: Build & Test (MacOS, Go ${{ matrix.goversion }})
-    needs: [lint]
-
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ matrix.goversion }}
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Unit tests
-        run: go test -v ./...
+        
+      - name: Go test
+        # Run tests with race detector on Linux stable build
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.go }}" = "stable" ]; then
+            go test -v -race -coverprofile=coverage.txt ./...
+          else
+            go test -v ./...
+          fi
+        shell: bash
 
   tests-ok:
     name: All tests passed
-    needs: [lint, codeql, build-linux, build-windows, build-macos]
+    needs: [lint, govulncheck, codeql, test]
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() }}
+    if: always()
     steps:
       - name: Check all tests passed
         uses: re-actors/alls-green@release/v1
