@@ -127,7 +127,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 
 		// Pre-listen to avoid internal library data races on the Listener/PacketConn fields.
-		if srv.Net == "tcp" || srv.Net == "tcp-tls" {
+		switch srv.Net {
+		case "tcp", "tcp-tls":
 			if srv.Listener == nil {
 				l, err := net.Listen("tcp", srv.Addr)
 				if err != nil {
@@ -138,7 +139,7 @@ func (s *Server) Run(ctx context.Context) error {
 			s.mu.Lock()
 			srv.Addr = srv.Listener.Addr().String()
 			s.mu.Unlock()
-		} else if srv.Net == "udp" {
+		case "udp":
 			if srv.PacketConn == nil {
 				pc, err := net.ListenPacket("udp", srv.Addr)
 				if err != nil {
