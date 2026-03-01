@@ -28,7 +28,6 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64
           # Show only issues introduced in the PR, but keep CI strict
           only-new-issues: false
           args: --timeout=5m
