@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,9 +10,11 @@ import (
 	"net/http/pprof"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"path"
 	"runtime/debug"
 	"strings"
+	"syscall"
 
 	"codeberg.org/miekg/dns"
 	"github.com/gologme/log"
@@ -72,14 +75,10 @@ func main() {
 	}
 	mux.HandleFunc(".", server.ServeDNS)
 
-	sigs := make(chan os.Signal, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		<-sigs
-		cancel()
-		_ = server.Shutdown(ctx)
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	log.Fatal(server.Run(ctx))
+	if err := server.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatalf("Server error: %v", err)
+	}
 }
