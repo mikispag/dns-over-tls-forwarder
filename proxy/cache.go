@@ -31,7 +31,7 @@ func newCache(size int, evictMetrics bool) (*cache, error) {
 }
 
 func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
-	if c == nil {
+	if c == nil || mk == nil || len(mk.Question) == 0 {
 		return nil, false
 	}
 
@@ -45,50 +45,94 @@ func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {
 	mv := CloneMsg(v.m)
 	// Rewrite the answer ID to match the question ID.
 	mv.ID = mk.ID
+	now := time.Now().UTC()
 	// If the TTL has expired, speculatively return the cache entry anyway with a short TTL, and refresh it.
-	if v.exp.Before(time.Now().UTC()) {
+	if v.exp.Before(now) {
 		log.Debugf("[CACHE] MISS + REFRESH due to expired TTL for %q", k)
 		// Set a very short TTL
 		for _, a := range mv.Answer {
+			a.Header().TTL = 60
+		}
+		for _, a := range mv.Ns {
 			a.Header().TTL = 60
 		}
 		return mv, false
 	}
 	log.Debugf("[CACHE] HIT %q", k)
 	// Rewrite the TTL.
+	remainingTTL := uint32(max(1, int64(time.Until(v.exp).Seconds())))
 	for _, a := range mv.Answer {
-		a.Header().TTL = uint32(time.Since(v.exp).Seconds() * -1)
+		a.Header().TTL = remainingTTL
+	}
+	for _, a := range mv.Ns {
+		a.Header().TTL = remainingTTL
 	}
 	return mv, true
 }
 
 func (c *cache) put(k *dns.Msg, v *dns.Msg) {
-	if c == nil {
+	if c == nil || v == nil || k == nil || len(k.Question) == 0 {
+		return
+	}
+
+	cacheKey := key(k)
+	// Only cache NOERROR (with answers or NODATA) and NXDOMAIN (RFC 2308).
+	if v.Rcode != dns.RcodeSuccess && v.Rcode != dns.RcodeNameError {
+		log.Debugf("[CACHE] Did not cache error answer (%v) for %q", dns.RcodeToString[v.Rcode], cacheKey)
 		return
 	}
 
 	now := time.Now().UTC()
-	minExpirationTime := now.Add(maxTTL)
-	cacheKey := key(k)
-	// Do not cache DNS errors.
-	if v.Rcode != dns.RcodeSuccess {
-		log.Debugf("[CACHE] Did not cache error answer (%v) for %q", dns.RcodeToString[v.Rcode], cacheKey)
+	var minTTLSec uint32 = 300 // default negative TTL cap (5 min)
+
+	if v.Rcode == dns.RcodeSuccess && len(v.Answer) > 0 {
+		minTTLSec = uint32(maxTTL / time.Second)
+		for _, a := range v.Answer {
+			if ttl := a.Header().TTL; ttl < minTTLSec {
+				minTTLSec = ttl
+			}
+		}
+	} else {
+		// RFC 2308: For NXDOMAIN or NODATA, inspect SOA record in the Authority (Ns) section
+		hasSOA := false
+		for _, rr := range v.Ns {
+			if soa, ok := rr.(*dns.SOA); ok {
+				hasSOA = true
+				minTTLSec = soa.Minttl
+				if soa.Header().TTL < minTTLSec {
+					minTTLSec = soa.Header().TTL
+				}
+				break
+			}
+		}
+		if !hasSOA {
+			minTTLSec = 60 // sensible default when no SOA is returned
+		}
+		// Cap negative TTL at 300 seconds
+		if minTTLSec > 300 {
+			minTTLSec = 300
+		}
+		log.Debugf("[CACHE] Negative cache entry (%v) for %q with TTL %ds", dns.RcodeToString[v.Rcode], cacheKey, minTTLSec)
+	}
+
+	if minTTLSec == 0 {
 		return
 	}
-	for _, a := range v.Answer {
-		ttl := time.Duration(a.Header().TTL) * time.Second
-		exp := now.Add(ttl)
-		if exp.Before(minExpirationTime) {
-			minExpirationTime = exp
-		}
-	}
+
+	exp := now.Add(time.Duration(minTTLSec) * time.Second)
 	cm := CloneMsg(v)
 	// Always set the TC bit to off.
 	cm.Truncated = false
 
-	c.c.Put(cacheKey, cacheValue{m: cm, exp: minExpirationTime})
+	c.c.Put(cacheKey, cacheValue{m: cm, exp: exp})
 }
 
 func key(k *dns.Msg) string {
-	return k.Question[0].String()
+	if k == nil || len(k.Question) == 0 {
+		return ""
+	}
+	if k.Security {
+		return k.Question[0].String() + ":do=1"
+	}
+	return k.Question[0].String() + ":do=0"
 }
