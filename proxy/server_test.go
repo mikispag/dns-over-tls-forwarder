@@ -539,3 +539,57 @@ func TestConcurrencyRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDeadConnectionRecovery(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	var activeConns []net.Conn
+	var connMu sync.Mutex
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			connMu.Lock()
+			activeConns = append(activeConns, c)
+			connMu.Unlock()
+		}
+	}()
+
+	addr := l.Addr().String()
+	p := newPoolWithAddr(2, addr, func() (net.Conn, error) {
+		return net.Dial("tcp", addr)
+	})
+
+	// Get a connection and return it to pool
+	c1, err := p.get()
+	if err != nil {
+		t.Fatalf("First get failed: %v", err)
+	}
+	p.put(c1)
+
+	// Close the connection on the remote end so it becomes dead
+	time.Sleep(10 * time.Millisecond)
+	connMu.Lock()
+	for _, c := range activeConns {
+		_ = c.Close()
+	}
+	connMu.Unlock()
+	time.Sleep(10 * time.Millisecond)
+
+	// Next get should detect that the pooled connection is dead, discard it, and dial fresh
+	c2, err := p.get()
+	if err != nil {
+		t.Fatalf("Second get failed: %v", err)
+	}
+	if c2 == nil {
+		t.Fatal("Expected fresh connection, got nil")
+	}
+	_ = c2.Close()
+	p.shutdown()
+}
