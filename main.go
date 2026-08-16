@@ -35,7 +35,7 @@ var (
 	minTTL          = flag.Int("minTTL", 60, "minimum TTL in seconds to send to clients. If the TTL provided upstream is smaller, `minTTL` is used.")
 	evictMetrics    = flag.Bool("em", false, "collect metrics on evictions")
 	addr            = flag.String("a", ":53", "`address:port` to listen on. In order to listen on the loopback interface only, use `127.0.0.1:53`. To listen on any interface, use `:53`")
-	ppr             = flag.Int("pprof", 0, "port to use for pprof debugging. If set to 0 (default) pprof will not be started.")
+	ppr             = flag.Int("pprof", 0, "port to use for pprof and Prometheus metrics debugging. If set to 0 (default) pprof will not be started.")
 )
 
 func main() {
@@ -68,10 +68,15 @@ func main() {
 	server := proxy.NewServer(mux, logger, 0, *evictMetrics, *minTTL, *addr, strings.Split(*upstreamServers, ",")...)
 
 	if *ppr != 0 {
-		mux := http.NewServeMux()
-		mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
-		mux.Handle("/debug/server/", server.DebugHandler())
-		go func() { log.Error(http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), mux)) }()
+		httpMux := http.NewServeMux()
+		httpMux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+		httpMux.Handle("/debug/server/", server.DebugHandler())
+		httpMux.Handle("/metrics", server.PrometheusHandler())
+		go func() {
+			if err := http.ListenAndServe(fmt.Sprintf("localhost:%d", *ppr), httpMux); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Errorf("HTTP server error: %v", err)
+			}
+		}()
 	}
 	mux.HandleFunc(".", server.ServeDNS)
 
