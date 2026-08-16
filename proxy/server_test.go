@@ -593,3 +593,129 @@ func TestDeadConnectionRecovery(t *testing.T) {
 	_ = c2.Close()
 	p.shutdown()
 }
+
+func TestDNSSECAwareCache(t *testing.T) {
+	var count int
+	var mu sync.Mutex
+	ts, cleanup := setupTestServer(t, 100, func(q string) string {
+		mu.Lock()
+		count++
+		mu.Unlock()
+		return "raccoon.miki. 2311 IN A 42.42.42.42"
+	})
+	defer cleanup()
+
+	c := dns.NewClient()
+	// Query 1: DO = false
+	m1 := dns.NewMsg(ts.question, dns.TypeA)
+	m1.Security = false
+	r1, _, err := c.Exchange(context.TODO(), m1, "udp", ts.laddr)
+	if err != nil {
+		t.Fatalf("Query 1 failed: %v", err)
+	}
+	if len(r1.Answer) != 1 {
+		t.Fatalf("Query 1 answer len: %d", len(r1.Answer))
+	}
+
+	// Query 2: DO = true (should not hit the DO=false cache entry)
+	m2 := dns.NewMsg(ts.question, dns.TypeA)
+	m2.Security = true
+	r2, _, err := c.Exchange(context.TODO(), m2, "udp", ts.laddr)
+	if err != nil {
+		t.Fatalf("Query 2 failed: %v", err)
+	}
+	if len(r2.Answer) != 1 {
+		t.Fatalf("Query 2 answer len: %d", len(r2.Answer))
+	}
+
+	mu.Lock()
+	if count != 2 {
+		t.Errorf("Expected 2 upstream queries for distinct DO flags, got %d", count)
+	}
+	mu.Unlock()
+}
+
+func TestNegativeCaching(t *testing.T) {
+	const raddr = "neg.upstream:853"
+	flst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	realRAddr := flst.Addr().String()
+
+	var upstreamCalls int
+	var mu sync.Mutex
+	remote := &dns.Server{
+		Addr:     realRAddr,
+		Net:      "tcp",
+		Listener: flst,
+		Handler: fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+			mu.Lock()
+			upstreamCalls++
+			mu.Unlock()
+
+			m := new(dns.Msg)
+			dnsutil.SetReply(m, q)
+			m.Rcode = dns.RcodeNameError
+			soa, _ := dns.New("nonexistent.test. 300 IN SOA ns1.test. hostmaster.test. 1 7200 3600 1209600 300")
+			m.Ns = append(m.Ns, soa)
+			_ = m.Pack()
+			_, _ = m.WriteTo(w)
+		}),
+	}
+	go func() { _ = remote.ListenAndServe() }()
+	defer func() { _ = flst.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 100, false, 60, "127.0.0.1:0", raddr)
+	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+		return net.Dial("tcp", realRAddr)
+	}
+	s.pools = nil
+	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
+	mux.HandleFunc(".", s.ServeDNS)
+	go func() { _ = s.Run(ctx) }()
+	defer cancel()
+
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	c := dns.NewClient()
+	m := dns.NewMsg("nonexistent.test.", dns.TypeA)
+
+	// First query: cache miss -> hits upstream
+	r1, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
+	if err != nil {
+		t.Fatalf("Query 1 failed: %v", err)
+	}
+	if r1.Rcode != dns.RcodeNameError {
+		t.Fatalf("Query 1 got Rcode %d, want NXDOMAIN", r1.Rcode)
+	}
+
+	// Second query: negative cache hit -> does not hit upstream
+	r2, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
+	if err != nil {
+		t.Fatalf("Query 2 failed: %v", err)
+	}
+	if r2.Rcode != dns.RcodeNameError {
+		t.Fatalf("Query 2 got Rcode %d, want NXDOMAIN", r2.Rcode)
+	}
+
+	mu.Lock()
+	if upstreamCalls != 1 {
+		t.Errorf("Expected exactly 1 upstream call due to negative caching, got %d", upstreamCalls)
+	}
+	mu.Unlock()
+}
