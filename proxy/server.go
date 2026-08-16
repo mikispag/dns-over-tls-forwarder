@@ -16,6 +16,7 @@ import (
 	"github.com/gologme/log"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -34,6 +35,9 @@ type Server struct {
 	rq      chan *dns.Msg
 	dial    func(addr string, cfg *tls.Config) (net.Conn, error)
 	minTTL  int
+
+	sf      singleflight.Group
+	metrics *ServerMetrics
 
 	mu          sync.RWMutex
 	currentTime time.Time
@@ -66,8 +70,9 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 		dial: func(addr string, cfg *tls.Config) (net.Conn, error) {
 			return tls.Dial("tcp", addr, cfg)
 		},
-		minTTL: minTTL,
-		Log:    log,
+		minTTL:  minTTL,
+		metrics: newServerMetrics(),
+		Log:     log,
 	}
 	if len(upstreamServers) == 0 {
 		upstreamServers = []string{"one.one.one.one:853@1.1.1.1", "dns.google:853@8.8.8.8"}
@@ -75,7 +80,7 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 	}
 	for _, addr := range upstreamServers {
 		s.Log.Infof("DNS over TLS address: %v", addr)
-		s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(addr)))
+		s.pools = append(s.pools, newPoolWithAddr(connectionsPerUpstream, addr, s.connector(addr)))
 	}
 	s.Log.Infof("DNS over TLS forwarder listening on %v", addr)
 	return s
@@ -201,6 +206,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // ServeDNS implements miekg/dns.Handler for Server.
 func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+	netType := "udp"
+	if w.RemoteAddr() != nil && strings.HasPrefix(w.RemoteAddr().Network(), "tcp") {
+		netType = "tcp"
+	}
+
+	// Guard against nil or empty questions (malformed probes or scanner packets).
+	if q == nil || len(q.Question) == 0 {
+		m := new(dns.Msg)
+		if q != nil {
+			m.ID = q.ID
+		}
+		m.Rcode = dns.RcodeFormatError
+		_ = m.Pack()
+		_, _ = m.WriteTo(w)
+		s.metrics.recordQuery(netType, dns.RcodeFormatError)
+		return
+	}
+
 	// Ensure the message is fully unpacked (especially the Extra/Pseudo sections for EDNS).
 	_ = q.Unpack()
 	inboundIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
@@ -217,11 +240,9 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	} else {
 		// Ensure the response ID matches the question ID.
 		m.ID = q.ID
-		// Ensure EDNS settings are compatible with client's request if we have a response.
-		// Cloudflare/Upstream might have returned a smaller UDPSize than client requested,
-		// which is fine. But if client requested DO bit, we should ensure it's there if upstream returned it.
 	}
 
+	s.metrics.recordQuery(netType, m.Rcode)
 	s.Log.Debugf("Answer to %s: %s", inboundIP, m.String())
 	_ = m.Pack()
 	if _, err := m.WriteTo(w); err != nil {
@@ -233,6 +254,11 @@ type debugStats struct {
 	CacheMetrics       specialized.CacheMetrics
 	CacheLen, CacheCap int
 	Uptime             string
+	TotalQueries       uint64
+	CacheHits          uint64
+	CacheMisses        uint64
+	CacheRefreshes     uint64
+	Deduplicated       uint64
 }
 
 // DebugHandler returns an http.Handler that serves debug stats.
@@ -243,10 +269,15 @@ func (s *Server) DebugHandler() http.Handler {
 		uptime := time.Since(s.startTime).String()
 		s.mu.Unlock()
 		buf, err := json.MarshalIndent(debugStats{
-			s.cache.c.Metrics(),
-			s.cache.c.Len(),
-			s.cache.c.Cap(),
-			uptime,
+			CacheMetrics:   s.cache.c.Metrics(),
+			CacheLen:       s.cache.c.Len(),
+			CacheCap:       s.cache.c.Cap(),
+			Uptime:         uptime,
+			TotalQueries:   s.metrics.QueriesTotal.Load(),
+			CacheHits:      s.metrics.CacheHits.Load(),
+			CacheMisses:    s.metrics.CacheMisses.Load(),
+			CacheRefreshes: s.metrics.CacheRefreshes.Load(),
+			Deduplicated:   s.metrics.SingleflightDeduplicated.Load(),
 		}, "", " ")
 		if err != nil {
 			http.Error(w, "Unable to retrieve debug info", http.StatusInternalServerError)
@@ -260,14 +291,17 @@ func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
 	m, ok := s.cache.get(q)
 	// Cache HIT.
 	if ok {
+		s.metrics.CacheHits.Add(1)
 		return m
 	}
 	// If there is a cache HIT with an expired TTL, speculatively return the cache entry anyway with a short TTL, and refresh it.
 	if !ok && m != nil {
+		s.metrics.CacheRefreshes.Add(1)
 		s.refresh(q)
 		return m
 	}
 	// If there is a cache MISS, forward the message upstream (with TTL rewritten) and return the answer.
+	s.metrics.CacheMisses.Add(1)
 	return s.forwardMessageAndCacheResponse(ctx, q)
 }
 
@@ -304,36 +338,77 @@ func (s *Server) timer(ctx context.Context) {
 	}
 }
 
-func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
-	m = s.forwardMessageAndGetResponse(ctx, q)
-	// Let's retry a few times if we can't resolve it at the first try.
-	for c := 0; m == nil && c < connectionsPerUpstream; c++ {
-		s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
-		m = s.forwardMessageAndGetResponse(ctx, q)
+func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg) *dns.Msg {
+	cacheKey := key(q)
+	res, err, shared := s.sf.Do(cacheKey, func() (interface{}, error) {
+		m := s.forwardMessageAndGetResponse(ctx, q)
+		// Let's retry a few times if we can't resolve it at the first try.
+		for c := 0; m == nil && c < connectionsPerUpstream; c++ {
+			s.Log.Debugf("Retrying %q [%d/%d]...", q.Question, c+1, connectionsPerUpstream)
+			m = s.forwardMessageAndGetResponse(ctx, q)
+		}
+		if m == nil {
+			s.Log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
+			return nil, errors.New("upstream resolution failed")
+		}
+		if m.Answer != nil {
+			// Rewrite the TTL.
+			for _, a := range m.Answer {
+				// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
+				a.Header().TTL = uint32(max(a.Header().TTL, uint32(s.minTTL)))
+			}
+		}
+		s.cache.put(q, m)
+		return m, nil
+	})
+
+	if shared {
+		s.metrics.SingleflightDeduplicated.Add(1)
 	}
-	if m == nil {
-		s.Log.Infof("Giving up on %q after %d connection retries.", q.Question, connectionsPerUpstream)
+	if err != nil || res == nil {
 		return nil
 	}
-	if m.Answer != nil {
-		// Rewrite the TTL.
-		for _, a := range m.Answer {
-			// If the TTL provided upstream is smaller than `minTTL`, rewrite it.
-			a.Header().TTL = uint32(max(a.Header().TTL, uint32(s.minTTL)))
+	return CloneMsg(res.(*dns.Msg))
+}
+
+func prepareOutboundQuery(q *dns.Msg) *dns.Msg {
+	qc := CloneMsg(q)
+	qc.Data = nil
+
+	// RFC 7871 ECS Scrubbing: remove any client subnet from pseudo/extra sections to protect privacy
+	if len(qc.Pseudo) > 0 {
+		filtered := make([]dns.RR, 0, len(qc.Pseudo))
+		for _, rr := range qc.Pseudo {
+			if _, isSubnet := rr.(*dns.SUBNET); !isSubnet {
+				// Strip existing PADDING before recalculating
+				if _, isPadding := rr.(*dns.PADDING); !isPadding {
+					filtered = append(filtered, rr)
+				}
+			}
 		}
+		qc.Pseudo = filtered
 	}
-	s.cache.put(q, m)
-	return m
+
+	// RFC 7830 / RFC 8467 EDNS0 Padding: pad queries to 128 bytes block size to prevent packet length fingerprinting
+	_ = qc.Pack()
+	currLen := len(qc.Data)
+	const blockSize = 128
+	// Option header overhead is 4 bytes (2-byte code + 2-byte length)
+	targetLen := ((currLen + 4 + blockSize - 1) / blockSize) * blockSize
+	padLen := targetLen - (currLen + 4)
+	if padLen > 0 {
+		qc.Pseudo = append(qc.Pseudo, &dns.PADDING{Padding: strings.Repeat("00", padLen)})
+		_ = qc.Pack()
+	}
+
+	return qc
 }
 
 func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (m *dns.Msg) {
 	resps := make(chan *dns.Msg, len(s.pools))
 	for _, p := range s.pools {
 		go func(p *pool) {
-			// Clone q for each goroutine to avoid data races during Pack().
-			qc := CloneMsg(q)
-			// Ensure we don't send the Data buffer if it was already packed for a different upstream.
-			qc.Data = nil
+			qc := prepareOutboundQuery(q)
 			r, _ := s.exchangeMessages(ctx, p, qc)
 			resps <- r
 		}(p)
@@ -361,8 +436,10 @@ func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (
 var errNilResponse = errors.New("nil response from upstream")
 
 func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+	start := time.Now()
 	c, err := p.get()
 	if err != nil {
+		s.metrics.recordUpstream(p.addr, time.Since(start), err)
 		return nil, err
 	}
 	defer func() {
@@ -372,6 +449,8 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 	}()
 	client := dns.NewClient()
 	resp, _, err = client.ExchangeWithConn(ctx, q, c)
+	dur := time.Since(start)
+	s.metrics.recordUpstream(p.addr, dur, err)
 	if err != nil {
 		s.Log.Debugf("Exchange failed: %v", err)
 		_ = c.Close()

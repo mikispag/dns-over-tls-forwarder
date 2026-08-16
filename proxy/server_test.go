@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -540,58 +541,25 @@ func TestConcurrencyRace(t *testing.T) {
 	wg.Wait()
 }
 
-func TestDeadConnectionRecovery(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+func TestEmptyQuestion(t *testing.T) {
+	ts, cleanup := setupTestServer(t, 0, nil)
+	defer cleanup()
+
+	c := dns.NewClient()
+	m := new(dns.Msg)
+	m.ID = 1234
+	// No Question added (len == 0)
+
+	r, _, err := c.Exchange(context.TODO(), m, "udp", ts.laddr)
 	if err != nil {
-		t.Fatalf("Failed to listen: %v", err)
+		t.Fatalf("Exchange failed: %v", err)
 	}
-	defer func() { _ = l.Close() }()
-
-	var activeConns []net.Conn
-	var connMu sync.Mutex
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			connMu.Lock()
-			activeConns = append(activeConns, c)
-			connMu.Unlock()
-		}
-	}()
-
-	addr := l.Addr().String()
-	p := newPoolWithAddr(2, addr, func() (net.Conn, error) {
-		return net.Dial("tcp", addr)
-	})
-
-	// Get a connection and return it to pool
-	c1, err := p.get()
-	if err != nil {
-		t.Fatalf("First get failed: %v", err)
+	if r.Rcode != dns.RcodeFormatError {
+		t.Errorf("Got Rcode %d, want FORMERR (1)", r.Rcode)
 	}
-	p.put(c1)
-
-	// Close the connection on the remote end so it becomes dead
-	time.Sleep(10 * time.Millisecond)
-	connMu.Lock()
-	for _, c := range activeConns {
-		_ = c.Close()
+	if r.ID != 1234 {
+		t.Errorf("Got ID %d, want 1234", r.ID)
 	}
-	connMu.Unlock()
-	time.Sleep(10 * time.Millisecond)
-
-	// Next get should detect that the pooled connection is dead, discard it, and dial fresh
-	c2, err := p.get()
-	if err != nil {
-		t.Fatalf("Second get failed: %v", err)
-	}
-	if c2 == nil {
-		t.Fatal("Expected fresh connection, got nil")
-	}
-	_ = c2.Close()
-	p.shutdown()
 }
 
 func TestDNSSECAwareCache(t *testing.T) {
@@ -718,4 +686,264 @@ func TestNegativeCaching(t *testing.T) {
 		t.Errorf("Expected exactly 1 upstream call due to negative caching, got %d", upstreamCalls)
 	}
 	mu.Unlock()
+}
+
+func TestSingleflightDeduplication(t *testing.T) {
+	const raddr = "sf.upstream:853"
+	flst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	realRAddr := flst.Addr().String()
+
+	var upstreamCalls int
+	var mu sync.Mutex
+	remote := &dns.Server{
+		Addr:     realRAddr,
+		Net:      "tcp",
+		Listener: flst,
+		Handler: fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+			mu.Lock()
+			upstreamCalls++
+			mu.Unlock()
+			time.Sleep(50 * time.Millisecond) // artificial latency to ensure concurrency overlap
+
+			m := new(dns.Msg)
+			dnsutil.SetReply(m, q)
+			ans, _ := dns.New(q.Question[0].Header().Name + " 3600 IN A 1.2.3.4")
+			m.Answer = append(m.Answer, ans)
+			_ = m.Pack()
+			_, _ = m.WriteTo(w)
+		}),
+	}
+	go func() { _ = remote.ListenAndServe() }()
+	defer func() { _ = flst.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+		return net.Dial("tcp", realRAddr)
+	}
+	s.pools = nil
+	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
+	mux.HandleFunc(".", s.ServeDNS)
+	go func() { _ = s.Run(ctx) }()
+	defer cancel()
+
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	const concurrentQueries = 10
+	for i := 0; i < concurrentQueries; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			c := dns.NewClient()
+			m := dns.NewMsg("singleflight-test.com.", dns.TypeA)
+			m.ID = uint16(id + 100)
+			r, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
+			if err != nil {
+				t.Errorf("Query %d failed: %v", id, err)
+			}
+			if r == nil || len(r.Answer) == 0 {
+				t.Errorf("Query %d received empty answer", id)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	if upstreamCalls > 2 {
+		t.Errorf("Singleflight should coalesce parallel queries; got %d upstream calls, want <= 2", upstreamCalls)
+	}
+	mu.Unlock()
+}
+
+func TestPrivacyPaddingAndECS(t *testing.T) {
+	const raddr = "privacy.upstream:853"
+	flst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	realRAddr := flst.Addr().String()
+
+	var receivedQuery *dns.Msg
+	var mu sync.Mutex
+	remote := &dns.Server{
+		Addr:     realRAddr,
+		Net:      "tcp",
+		Listener: flst,
+		Handler: fakeServer(func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+			_ = q.Unpack()
+			mu.Lock()
+			receivedQuery = CloneMsg(q)
+			mu.Unlock()
+
+			m := new(dns.Msg)
+			dnsutil.SetReply(m, q)
+			ans, _ := dns.New("privacy.test. 3600 IN A 1.2.3.4")
+			m.Answer = append(m.Answer, ans)
+			_ = m.Pack()
+			_, _ = m.WriteTo(w)
+		}),
+	}
+	go func() { _ = remote.ListenAndServe() }()
+	defer func() { _ = flst.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := log.New(os.Stdout, "", log.Flags())
+	mux := dns.NewServeMux()
+	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+		return net.Dial("tcp", realRAddr)
+	}
+	s.pools = nil
+	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
+	mux.HandleFunc(".", s.ServeDNS)
+	go func() { _ = s.Run(ctx) }()
+	defer cancel()
+
+	actualProxyAddr := ""
+	for i := 0; i < 50; i++ {
+		s.mu.Lock()
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+			actualProxyAddr = s.servers[1].Addr
+		}
+		s.mu.Unlock()
+		if actualProxyAddr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	c := dns.NewClient()
+	m := dns.NewMsg("privacy.test.", dns.TypeA)
+	// Add ECS option to client request
+	subnet := &dns.SUBNET{
+		Family:  1,
+		Netmask: 24,
+		Address: netip.MustParseAddr("1.2.3.4"),
+	}
+	m.Pseudo = append(m.Pseudo, subnet)
+
+	_, _, err = c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if receivedQuery == nil {
+		t.Fatal("Upstream did not receive query")
+	}
+
+	// Verify ECS is stripped
+	for _, p := range receivedQuery.Pseudo {
+		if _, ok := p.(*dns.SUBNET); ok {
+			t.Errorf("Upstream query contains SUBNET, should have been stripped for privacy")
+		}
+	}
+
+	// Verify EDNS0 PADDING is present
+	foundPadding := false
+	for _, p := range receivedQuery.Pseudo {
+		if _, ok := p.(*dns.PADDING); ok {
+			foundPadding = true
+		}
+	}
+	if !foundPadding {
+		t.Errorf("Upstream query does not contain PADDING option")
+	}
+}
+
+func TestPrometheusMetricsHandler(t *testing.T) {
+	ts, cleanup := setupTestServer(t, 100, nil)
+	defer cleanup()
+
+	// Perform a query to generate stats
+	ts.exchange("metrics-test", "42.42.42.42")
+
+	h := ts.s.PrometheusHandler()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/metrics", nil)
+	h.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("Metrics endpoint returned status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, expected := range []string{"dns_queries_total", "dns_responses_total", "dns_cache_hits_total", "dns_cache_misses_total", "dns_cache_entries"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Metrics output missing expected metric %q:\n%s", expected, body)
+		}
+	}
+}
+
+func TestDeadConnectionRecovery(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	var activeConns []net.Conn
+	var connMu sync.Mutex
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			connMu.Lock()
+			activeConns = append(activeConns, c)
+			connMu.Unlock()
+		}
+	}()
+
+	addr := l.Addr().String()
+	dialCount := 0
+	p := newPoolWithAddr(2, addr, func() (net.Conn, error) {
+		dialCount++
+		return net.Dial("tcp", addr)
+	})
+
+	// Get a connection and return it to pool
+	c1, err := p.get()
+	if err != nil {
+		t.Fatalf("First get failed: %v", err)
+	}
+	p.put(c1)
+
+	// Close the connection on the remote end so it becomes dead
+	time.Sleep(10 * time.Millisecond)
+	connMu.Lock()
+	for _, c := range activeConns {
+		_ = c.Close()
+	}
+	connMu.Unlock()
+	time.Sleep(10 * time.Millisecond)
+
+	// Next get should detect that the pooled connection is dead, discard it, and dial fresh
+	c2, err := p.get()
+	if err != nil {
+		t.Fatalf("Second get failed: %v", err)
+	}
+	if c2 == nil {
+		t.Fatal("Expected fresh connection, got nil")
+	}
+	_ = c2.Close()
+	p.shutdown()
 }
