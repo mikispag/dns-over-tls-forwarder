@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"sync"
@@ -95,68 +96,71 @@ func (s *Server) PrometheusHandler() http.Handler {
 			cacheCap = s.cache.c.Cap()
 		}
 
-		fmt.Fprintf(w, "# HELP dns_uptime_seconds Total time the server has been running in seconds.\n")
-		fmt.Fprintf(w, "# TYPE dns_uptime_seconds gauge\n")
-		fmt.Fprintf(w, "dns_uptime_seconds %.2f\n\n", uptimeSeconds)
+		var buf bytes.Buffer
 
-		fmt.Fprintf(w, "# HELP dns_queries_total Total number of DNS queries received.\n")
-		fmt.Fprintf(w, "# TYPE dns_queries_total counter\n")
-		fmt.Fprintf(w, "dns_queries_total{protocol=\"udp\"} %d\n", s.metrics.QueriesUDP.Load())
-		fmt.Fprintf(w, "dns_queries_total{protocol=\"tcp\"} %d\n\n", s.metrics.QueriesTCP.Load())
+		fmt.Fprintf(&buf, "# HELP dns_uptime_seconds Total time the server has been running in seconds.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_uptime_seconds gauge\n")
+		fmt.Fprintf(&buf, "dns_uptime_seconds %.2f\n\n", uptimeSeconds)
 
-		fmt.Fprintf(w, "# HELP dns_responses_total Total number of DNS responses sent by RCODE.\n")
-		fmt.Fprintf(w, "# TYPE dns_responses_total counter\n")
-		fmt.Fprintf(w, "dns_responses_total{rcode=\"NOERROR\"} %d\n", s.metrics.QueriesSuccess.Load())
-		fmt.Fprintf(w, "dns_responses_total{rcode=\"NXDOMAIN\"} %d\n", s.metrics.QueriesNXDomain.Load())
-		fmt.Fprintf(w, "dns_responses_total{rcode=\"SERVFAIL\"} %d\n", s.metrics.QueriesServFail.Load())
-		fmt.Fprintf(w, "dns_responses_total{rcode=\"FORMERR\"} %d\n", s.metrics.QueriesFormErr.Load())
-		fmt.Fprintf(w, "dns_responses_total{rcode=\"OTHER\"} %d\n\n", s.metrics.QueriesOtherErr.Load())
+		fmt.Fprintf(&buf, "# HELP dns_queries_total Total number of DNS queries received.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_queries_total counter\n")
+		fmt.Fprintf(&buf, "dns_queries_total{protocol=\"udp\"} %d\n", s.metrics.QueriesUDP.Load())
+		fmt.Fprintf(&buf, "dns_queries_total{protocol=\"tcp\"} %d\n\n", s.metrics.QueriesTCP.Load())
 
-		fmt.Fprintf(w, "# HELP dns_cache_hits_total Total number of cache hits.\n")
-		fmt.Fprintf(w, "# TYPE dns_cache_hits_total counter\n")
-		fmt.Fprintf(w, "dns_cache_hits_total %d\n\n", s.metrics.CacheHits.Load())
+		fmt.Fprintf(&buf, "# HELP dns_responses_total Total number of DNS responses sent by RCODE.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_responses_total counter\n")
+		fmt.Fprintf(&buf, "dns_responses_total{rcode=\"NOERROR\"} %d\n", s.metrics.QueriesSuccess.Load())
+		fmt.Fprintf(&buf, "dns_responses_total{rcode=\"NXDOMAIN\"} %d\n", s.metrics.QueriesNXDomain.Load())
+		fmt.Fprintf(&buf, "dns_responses_total{rcode=\"SERVFAIL\"} %d\n", s.metrics.QueriesServFail.Load())
+		fmt.Fprintf(&buf, "dns_responses_total{rcode=\"FORMERR\"} %d\n", s.metrics.QueriesFormErr.Load())
+		fmt.Fprintf(&buf, "dns_responses_total{rcode=\"OTHER\"} %d\n\n", s.metrics.QueriesOtherErr.Load())
 
-		fmt.Fprintf(w, "# HELP dns_cache_misses_total Total number of cache misses.\n")
-		fmt.Fprintf(w, "# TYPE dns_cache_misses_total counter\n")
-		fmt.Fprintf(w, "dns_cache_misses_total %d\n\n", s.metrics.CacheMisses.Load())
+		fmt.Fprintf(&buf, "# HELP dns_cache_hits_total Total number of cache hits.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_hits_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_hits_total %d\n\n", s.metrics.CacheHits.Load())
 
-		fmt.Fprintf(w, "# HELP dns_cache_refreshes_total Total number of background refreshes for expired entries.\n")
-		fmt.Fprintf(w, "# TYPE dns_cache_refreshes_total counter\n")
-		fmt.Fprintf(w, "dns_cache_refreshes_total %d\n\n", s.metrics.CacheRefreshes.Load())
+		fmt.Fprintf(&buf, "# HELP dns_cache_misses_total Total number of cache misses.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_misses_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_misses_total %d\n\n", s.metrics.CacheMisses.Load())
 
-		fmt.Fprintf(w, "# HELP dns_cache_entries Current number of entries in cache.\n")
-		fmt.Fprintf(w, "# TYPE dns_cache_entries gauge\n")
-		fmt.Fprintf(w, "dns_cache_entries %d\n\n", cacheLen)
+		fmt.Fprintf(&buf, "# HELP dns_cache_refreshes_total Total number of background refreshes for expired entries.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_refreshes_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_refreshes_total %d\n\n", s.metrics.CacheRefreshes.Load())
 
-		fmt.Fprintf(w, "# HELP dns_cache_capacity Maximum capacity of the cache.\n")
-		fmt.Fprintf(w, "# TYPE dns_cache_capacity gauge\n")
-		fmt.Fprintf(w, "dns_cache_capacity %d\n\n", cacheCap)
+		fmt.Fprintf(&buf, "# HELP dns_cache_entries Current number of entries in cache.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_entries gauge\n")
+		fmt.Fprintf(&buf, "dns_cache_entries %d\n\n", cacheLen)
 
-		fmt.Fprintf(w, "# HELP dns_singleflight_deduplications_total Total number of concurrent duplicate upstream requests deduplicated.\n")
-		fmt.Fprintf(w, "# TYPE dns_singleflight_deduplications_total counter\n")
-		fmt.Fprintf(w, "dns_singleflight_deduplications_total %d\n\n", s.metrics.SingleflightDeduplicated.Load())
+		fmt.Fprintf(&buf, "# HELP dns_cache_capacity Maximum capacity of the cache.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_capacity gauge\n")
+		fmt.Fprintf(&buf, "dns_cache_capacity %d\n\n", cacheCap)
+
+		fmt.Fprintf(&buf, "# HELP dns_singleflight_deduplications_total Total number of concurrent duplicate upstream requests deduplicated.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_singleflight_deduplications_total counter\n")
+		fmt.Fprintf(&buf, "dns_singleflight_deduplications_total %d\n\n", s.metrics.SingleflightDeduplicated.Load())
 
 		s.metrics.upstreamMu.Lock()
-		defer s.metrics.upstreamMu.Unlock()
-
 		if len(s.metrics.upstreamStats) > 0 {
-			fmt.Fprintf(w, "# HELP dns_upstream_requests_total Total number of queries forwarded to upstream servers.\n")
-			fmt.Fprintf(w, "# TYPE dns_upstream_requests_total counter\n")
+			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total number of queries forwarded to upstream servers.\n")
+			fmt.Fprintf(&buf, "# TYPE dns_upstream_requests_total counter\n")
 			for u, stat := range s.metrics.upstreamStats {
-				fmt.Fprintf(w, "dns_upstream_requests_total{upstream=%q} %d\n", u, stat.requests.Load())
+				fmt.Fprintf(&buf, "dns_upstream_requests_total{upstream=%q} %d\n", u, stat.requests.Load())
 			}
-			fmt.Fprintf(w, "\n# HELP dns_upstream_errors_total Total number of errors encountered from upstream servers.\n")
-			fmt.Fprintf(w, "# TYPE dns_upstream_errors_total counter\n")
+			fmt.Fprintf(&buf, "\n# HELP dns_upstream_errors_total Total number of errors encountered from upstream servers.\n")
+			fmt.Fprintf(&buf, "# TYPE dns_upstream_errors_total counter\n")
 			for u, stat := range s.metrics.upstreamStats {
-				fmt.Fprintf(w, "dns_upstream_errors_total{upstream=%q} %d\n", u, stat.errors.Load())
+				fmt.Fprintf(&buf, "dns_upstream_errors_total{upstream=%q} %d\n", u, stat.errors.Load())
 			}
-			fmt.Fprintf(w, "\n# HELP dns_upstream_duration_seconds_total Total duration in seconds spent waiting for upstream responses.\n")
-			fmt.Fprintf(w, "# TYPE dns_upstream_duration_seconds_total counter\n")
+			fmt.Fprintf(&buf, "\n# HELP dns_upstream_duration_seconds_total Total duration in seconds spent waiting for upstream responses.\n")
+			fmt.Fprintf(&buf, "# TYPE dns_upstream_duration_seconds_total counter\n")
 			for u, stat := range s.metrics.upstreamStats {
 				durSec := float64(stat.duration.Load()) / 1e9
-				fmt.Fprintf(w, "dns_upstream_duration_seconds_total{upstream=%q} %.6f\n", u, durSec)
+				fmt.Fprintf(&buf, "dns_upstream_duration_seconds_total{upstream=%q} %.6f\n", u, durSec)
 			}
-			fmt.Fprintf(w, "\n")
+			fmt.Fprintf(&buf, "\n")
 		}
+		s.metrics.upstreamMu.Unlock()
+
+		_, _ = w.Write(buf.Bytes())
 	})
 }
