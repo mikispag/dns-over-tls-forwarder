@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -11,23 +13,27 @@ import (
 
 // ServerMetrics stores operational statistics for the DNS-over-TLS proxy.
 type ServerMetrics struct {
-	QueriesTotal     atomic.Uint64
-	QueriesUDP       atomic.Uint64
-	QueriesTCP       atomic.Uint64
-	QueriesSuccess   atomic.Uint64
-	QueriesNXDomain  atomic.Uint64
-	QueriesServFail  atomic.Uint64
-	QueriesFormErr   atomic.Uint64
-	QueriesOtherErr  atomic.Uint64
+	QueriesTotal    atomic.Uint64
+	QueriesUDP      atomic.Uint64
+	QueriesTCP      atomic.Uint64
+	QueriesSuccess  atomic.Uint64
+	QueriesNXDomain atomic.Uint64
+	QueriesServFail atomic.Uint64
+	QueriesFormErr  atomic.Uint64
+	QueriesOtherErr atomic.Uint64
 
-	CacheHits        atomic.Uint64
-	CacheMisses      atomic.Uint64
-	CacheRefreshes   atomic.Uint64
+	CacheHits      atomic.Uint64
+	CacheMisses    atomic.Uint64
+	CacheRefreshes atomic.Uint64
+
+	CacheStaleHits          atomic.Uint64
+	CacheRefreshesCompleted atomic.Uint64
+	CacheRefreshesDropped   atomic.Uint64
 
 	SingleflightDeduplicated atomic.Uint64
 
-	upstreamMu      sync.Mutex
-	upstreamStats   map[string]*upstreamStat
+	upstreamMu    sync.Mutex
+	upstreamStats map[string]*upstreamStat
 }
 
 type upstreamStat struct {
@@ -74,7 +80,7 @@ func (m *ServerMetrics) recordUpstream(upstream string, dur time.Duration, err e
 	m.upstreamMu.Unlock()
 
 	stat.requests.Add(1)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		stat.errors.Add(1)
 	}
 	stat.duration.Add(uint64(dur.Nanoseconds()))
@@ -86,7 +92,10 @@ func (s *Server) PrometheusHandler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
 		s.mu.Lock()
-		uptimeSeconds := time.Since(s.startTime).Seconds()
+		uptimeSeconds := 0.0
+		if !s.startTime.IsZero() {
+			uptimeSeconds = time.Since(s.startTime).Seconds()
+		}
 		s.mu.Unlock()
 
 		cacheLen := 0
@@ -123,9 +132,19 @@ func (s *Server) PrometheusHandler() http.Handler {
 		fmt.Fprintf(&buf, "# TYPE dns_cache_misses_total counter\n")
 		fmt.Fprintf(&buf, "dns_cache_misses_total %d\n\n", s.metrics.CacheMisses.Load())
 
-		fmt.Fprintf(&buf, "# HELP dns_cache_refreshes_total Total number of background refreshes for expired entries.\n")
+		fmt.Fprintf(&buf, "# HELP dns_cache_refreshes_total Total number of background refreshes queued.\n")
 		fmt.Fprintf(&buf, "# TYPE dns_cache_refreshes_total counter\n")
 		fmt.Fprintf(&buf, "dns_cache_refreshes_total %d\n\n", s.metrics.CacheRefreshes.Load())
+
+		fmt.Fprintf(&buf, "# HELP dns_cache_stale_hits_total Total number of stale answers served.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_stale_hits_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_stale_hits_total %d\n\n", s.metrics.CacheStaleHits.Load())
+		fmt.Fprintf(&buf, "# HELP dns_cache_refreshes_completed_total Total number of completed background refresh attempts, successful or failed.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_refreshes_completed_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_refreshes_completed_total %d\n\n", s.metrics.CacheRefreshesCompleted.Load())
+		fmt.Fprintf(&buf, "# HELP dns_cache_refreshes_dropped_total Total number of refresh requests skipped because they are duplicates or the queue is full.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_cache_refreshes_dropped_total counter\n")
+		fmt.Fprintf(&buf, "dns_cache_refreshes_dropped_total %d\n\n", s.metrics.CacheRefreshesDropped.Load())
 
 		fmt.Fprintf(&buf, "# HELP dns_cache_entries Current number of entries in cache.\n")
 		fmt.Fprintf(&buf, "# TYPE dns_cache_entries gauge\n")
@@ -141,12 +160,12 @@ func (s *Server) PrometheusHandler() http.Handler {
 
 		s.metrics.upstreamMu.Lock()
 		if len(s.metrics.upstreamStats) > 0 {
-			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total number of queries forwarded to upstream servers.\n")
+			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total upstream exchange attempts, including connection acquisition failures.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_requests_total counter\n")
 			for u, stat := range s.metrics.upstreamStats {
 				fmt.Fprintf(&buf, "dns_upstream_requests_total{upstream=%q} %d\n", u, stat.requests.Load())
 			}
-			fmt.Fprintf(&buf, "\n# HELP dns_upstream_errors_total Total number of errors encountered from upstream servers.\n")
+			fmt.Fprintf(&buf, "\n# HELP dns_upstream_errors_total Total upstream transport and protocol failures, excluding canceled lookups.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_errors_total counter\n")
 			for u, stat := range s.metrics.upstreamStats {
 				fmt.Fprintf(&buf, "dns_upstream_errors_total{upstream=%q} %d\n", u, stat.errors.Load())

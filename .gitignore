@@ -16,3 +16,6 @@ dns-over-tls-forwarder
 */corpus
 */suppressions
 */fuzz-fuzz.zip
+
+# Local planning and review notes
+tasks/

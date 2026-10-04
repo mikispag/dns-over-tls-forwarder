@@ -7,7 +7,7 @@ DynamicUser=yes
 LimitNOFILE=32768
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-ExecStart=/usr/local/bin/dns-over-tls-forwarder
+ExecStart=/usr/local/bin/dns-over-tls-forwarder -a 127.0.0.1:53
 Restart=always
 RestartSec=5
 

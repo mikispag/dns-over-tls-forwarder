@@ -42,8 +42,8 @@ type metrics struct {
 	store []string
 	// pos is the cursor for the store
 	pos int
-	// header is a backing map header to quickly check if the ring has an item
-	header map[string]struct{}
+	// header counts ring entries for each key, including repeated evictions.
+	header map[string]uint
 }
 
 func newMetrics(bufsize int, evictMetrics bool) metrics {
@@ -52,7 +52,7 @@ func newMetrics(bufsize int, evictMetrics bool) metrics {
 		return m
 	}
 	m.store = make([]string, 0, bufsize)
-	m.header = make(map[string]struct{}, bufsize)
+	m.header = make(map[string]uint, bufsize)
 	return m
 }
 
@@ -76,11 +76,15 @@ func (m *metrics) evict(k string) {
 	if len(m.store) < cap(m.store) {
 		m.pos = len(m.store)
 		m.store = append(m.store, k)
-		m.header[k] = struct{}{}
+		m.header[k]++
 		return
 	}
 	m.pos = (m.pos + 1) % cap(m.store)
-	delete(m.header, m.store[m.pos])
-	m.header[k] = struct{}{}
+	old := m.store[m.pos]
+	m.header[old]--
+	if m.header[old] == 0 {
+		delete(m.header, old)
+	}
+	m.header[k]++
 	m.store[m.pos] = k
 }

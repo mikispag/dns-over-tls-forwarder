@@ -59,8 +59,8 @@ func (f fakeListener) connect() net.Conn {
 	f.c <- r
 	return l
 }
-func (f fakeListener) dialer() func(addr string, c *tls.Config) (net.Conn, error) {
-	return func(addr string, _ *tls.Config) (net.Conn, error) {
+func (f fakeListener) dialer() func(context.Context, string, *tls.Config) (net.Conn, error) {
+	return func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		// TODO assert the tls config is correct.
 		if addr == f.a {
 			return f.connect(), nil
@@ -81,7 +81,7 @@ type testServer struct {
 func (ts *testServer) exchange(logmsg string, wantIP string) {
 	ts.tb.Helper()
 	c := dns.NewClient()
-	m := dns.NewMsg(ts.question, dns.TypeMX)
+	m := dns.NewMsg(ts.question, dns.TypeA)
 	m.ID = dns.ID()
 	m.RecursionDesired = true
 	gotr, _, err := c.Exchange(context.TODO(), m, "udp", ts.laddr)
@@ -148,7 +148,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 		started := false
 		for i := 0; i < 50; i++ {
 			ts.s.mu.Lock()
-			if len(ts.s.servers) > 1 && !strings.HasSuffix(ts.s.servers[1].Addr, ":0") {
+			if len(ts.s.servers) > 1 && !strings.HasSuffix(ts.s.servers[1].Addr, ":0") && !ts.s.startTime.IsZero() {
 				ts.laddr = ts.s.servers[1].Addr
 				started = true
 			}
@@ -319,7 +319,7 @@ func TestEDE(t *testing.T) {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
-	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
@@ -333,7 +333,7 @@ func TestEDE(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -391,7 +391,7 @@ func TestEDNSPropagation(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -495,7 +495,7 @@ func TestConcurrencyRace(t *testing.T) {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", u1.a, u2.a)
-	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", addr)
 	}
 	// Fixing pools
@@ -511,7 +511,7 @@ func TestConcurrencyRace(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -638,7 +638,7 @@ func TestNegativeCaching(t *testing.T) {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 100, false, 60, "127.0.0.1:0", raddr)
-	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
@@ -650,7 +650,7 @@ func TestNegativeCaching(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -723,7 +723,7 @@ func TestSingleflightDeduplication(t *testing.T) {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
-	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
@@ -735,7 +735,7 @@ func TestSingleflightDeduplication(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -807,7 +807,7 @@ func TestPrivacyPaddingAndECS(t *testing.T) {
 	logger := log.New(os.Stdout, "", log.Flags())
 	mux := dns.NewServeMux()
 	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
-	s.dial = func(addr string, _ *tls.Config) (net.Conn, error) {
+	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
@@ -819,7 +819,7 @@ func TestPrivacyPaddingAndECS(t *testing.T) {
 	actualProxyAddr := ""
 	for i := 0; i < 50; i++ {
 		s.mu.Lock()
-		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") {
+		if len(s.servers) > 1 && !strings.HasSuffix(s.servers[1].Addr, ":0") && !s.startTime.IsZero() {
 			actualProxyAddr = s.servers[1].Addr
 		}
 		s.mu.Unlock()
@@ -915,13 +915,13 @@ func TestDeadConnectionRecovery(t *testing.T) {
 
 	addr := l.Addr().String()
 	dialCount := 0
-	p := newPoolWithAddr(2, addr, func() (net.Conn, error) {
+	p := newPoolWithAddr(2, addr, func(context.Context) (net.Conn, error) {
 		dialCount++
 		return net.Dial("tcp", addr)
 	})
 
 	// Get a connection and return it to pool
-	c1, err := p.get()
+	c1, err := p.get(context.Background())
 	if err != nil {
 		t.Fatalf("First get failed: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestDeadConnectionRecovery(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Next get should detect that the pooled connection is dead, discard it, and dial fresh
-	c2, err := p.get()
+	c2, err := p.get(context.Background())
 	if err != nil {
 		t.Fatalf("Second get failed: %v", err)
 	}

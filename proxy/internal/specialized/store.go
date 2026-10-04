@@ -88,6 +88,14 @@ func (c *store) update(now uint, key string, v Value) (updated bool) {
 
 func (c *store) peek() item { return c.pq[0] }
 
+func (c *store) remove(key string) bool {
+	i, ok := c.m[key]
+	if ok {
+		heap.Remove(c, i)
+	}
+	return ok
+}
+
 // updateUnchecked updates the item as specified without checking if the item is there or checking
 // for boundaries.
 func (c *store) updateUnchecked(now uint, i int, v Value, startCount uint) {
@@ -172,11 +180,12 @@ func (c *store) Push(x interface{}) {
 }
 func (c *store) Pop() interface{} {
 	n := len(c.pq)
-	item := c.pq[n-1]
-	item.index = -1 // for safety
-	delete(c.m, item.key)
+	it := c.pq[n-1]
+	it.index = -1 // for safety
+	delete(c.m, it.key)
+	c.pq[n-1] = item{} // Release removed keys and values held by the backing array.
 	c.pq = c.pq[:n-1]
-	return item
+	return it
 }
 
 // }}}

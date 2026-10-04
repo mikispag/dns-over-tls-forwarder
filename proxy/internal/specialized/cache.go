@@ -164,6 +164,18 @@ func (c *Cache) Put(k string, v Value) {
 	c.m.evict(lruovf.key)
 }
 
+// Remove deletes an entry without counting it as a capacity eviction.
+func (c *Cache) Remove(k string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.mfa.remove(k) {
+		c.lru.remove(k)
+	}
+}
+
 // Len returns the amount of items currently stored in the cache.
 func (c *Cache) Len() int {
 	if c == nil {

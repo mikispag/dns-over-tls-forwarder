@@ -1,23 +1,29 @@
 package proxy
 
 import (
+	"context"
 	"errors"
-	"io"
 	"net"
-	"os"
 	"sync"
-	"time"
 )
 
-type connector func() (net.Conn, error)
+type connector func(context.Context) (net.Conn, error)
+
+var errPoolClosed = errors.New("pool is shut down")
 
 type pool struct {
 	addr string
 	c    connector
 
-	mu     sync.RWMutex
-	closed bool
-	buf    chan net.Conn
+	mu      sync.Mutex
+	closed  bool
+	size    int
+	dialing int
+	conns   map[net.Conn]bool // true while checked out
+	idle    []net.Conn
+	changed chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 func newPool(size int, c connector) *pool {
@@ -25,94 +31,128 @@ func newPool(size int, c connector) *pool {
 }
 
 func newPoolWithAddr(size int, addr string, c connector) *pool {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &pool{
-		addr: addr,
-		buf:  make(chan net.Conn, size),
-		c:    c,
+		addr:    addr,
+		c:       c,
+		size:    size,
+		conns:   make(map[net.Conn]bool),
+		changed: make(chan struct{}),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 }
 
-func isConnAlive(c net.Conn) bool {
-	if c == nil {
-		return false
-	}
-	// Try a short deadline 1-byte read to probe connection health
-	err := c.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-	if err != nil {
-		// If deadlines are not supported on this net.Conn, assume alive
-		return true
-	}
-	var b [1]byte
-	n, readErr := c.Read(b[:])
-	_ = c.SetReadDeadline(time.Time{})
-	if n > 0 {
-		// Unexpected unread data on idle connection
-		return false
-	}
-	if readErr != nil {
-		var netErr net.Error
-		if errors.As(readErr, &netErr) && netErr.Timeout() {
-			return true
-		}
-		if errors.Is(readErr, os.ErrDeadlineExceeded) {
-			return true
-		}
-		if errors.Is(readErr, io.EOF) || errors.Is(readErr, net.ErrClosed) {
-			return false
-		}
-		return false
-	}
-	return true
+func (p *pool) notifyLocked() {
+	close(p.changed)
+	p.changed = make(chan struct{})
 }
 
-func (p *pool) get() (net.Conn, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed {
-		return nil, errors.New("pool is shut down")
-	}
-
+func (p *pool) get(ctx context.Context) (net.Conn, error) {
 	for {
-		select {
-		case c := <-p.buf:
-			if isConnAlive(c) {
-				return c, nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, errPoolClosed
+		}
+		if n := len(p.idle); n > 0 {
+			c := p.idle[n-1]
+			p.idle = p.idle[:n-1]
+			p.conns[c] = true
+			p.mu.Unlock()
+			return c, nil
+		}
+		if len(p.conns)+p.dialing < p.size {
+			p.dialing++
+			p.mu.Unlock()
+			dialCtx, cancel := context.WithCancel(ctx)
+			stop := context.AfterFunc(p.ctx, cancel)
+			c, err := p.c(dialCtx)
+			stop()
+			cancel()
+			p.mu.Lock()
+			p.dialing--
+			if p.closed {
+				err = errPoolClosed
+			} else if ctx.Err() != nil {
+				err = ctx.Err()
 			}
-			_ = c.Close()
-			continue
-		default:
-			return p.c()
+			if err == nil {
+				p.conns[c] = true
+			}
+			p.notifyLocked()
+			p.mu.Unlock()
+			if err != nil && c != nil {
+				_ = c.Close()
+				c = nil
+			}
+			return c, err
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
 		}
 	}
 }
 
 func (p *pool) put(c net.Conn) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed || c == nil {
-		if c != nil {
-			_ = c.Close()
-		}
+	if c == nil {
 		return
 	}
+	p.mu.Lock()
+	active, ok := p.conns[c]
+	if ok && active {
+		p.conns[c] = false
+		p.idle = append(p.idle, c)
+		p.notifyLocked()
+	}
+	p.mu.Unlock()
+	if !ok {
+		_ = c.Close()
+	}
+}
 
-	select {
-	case p.buf <- c:
-	default:
+func (p *pool) discard(c net.Conn) {
+	p.mu.Lock()
+	active, ok := p.conns[c]
+	if ok {
+		delete(p.conns, c)
+		if !active {
+			for i, idle := range p.idle {
+				if idle == c {
+					p.idle = append(p.idle[:i], p.idle[i+1:]...)
+					break
+				}
+			}
+		}
+		p.notifyLocked()
+	}
+	p.mu.Unlock()
+	if ok {
 		_ = c.Close()
 	}
 }
 
 func (p *pool) shutdown() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.closed {
+		p.mu.Unlock()
 		return
 	}
 	p.closed = true
-
-	close(p.buf)
-	for c := range p.buf {
+	conns := p.conns
+	p.conns = nil
+	p.idle = nil
+	p.notifyLocked()
+	p.mu.Unlock()
+	p.cancel()
+	for c := range conns {
 		_ = c.Close()
 	}
 }
