@@ -55,6 +55,7 @@ type Server struct {
 }
 
 // NewServer constructs a new server but does not start it, use Run to start it afterwards.
+// A nil mux forwards every query; a supplied mux controls query routing.
 // A zero cacheSize selects the default capacity; a negative size disables caching.
 // Without upstreamServers, the Cloudflare and Google defaults are used.
 // Configuration errors are returned by Run.
@@ -83,6 +84,11 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 		refreshPending: make(map[string]struct{}),
 		metrics:        newServerMetrics(),
 		Log:            log,
+	}
+	if mux == nil {
+		for _, listener := range s.servers {
+			listener.Handler = s
+		}
 	}
 	if len(upstreamServers) == 0 {
 		upstreamServers = []string{"one.one.one.one:853@1.1.1.1", "dns.google:853@8.8.8.8"}

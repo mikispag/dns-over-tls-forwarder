@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,10 +21,7 @@ import (
 )
 
 func runtimeServer(addr string) *Server {
-	mux := dns.NewServeMux()
-	s := NewServer(mux, log.New(io.Discard, "", 0), 100, false, 0, addr, "127.0.0.1:853")
-	mux.HandleFunc(".", s.ServeDNS)
-	return s
+	return NewServer(nil, log.New(io.Discard, "", 0), 100, false, 0, addr, "127.0.0.1:853")
 }
 
 func cacheRuntimeAnswer(s *Server, name string, count int) *dns.Msg {
@@ -107,6 +105,18 @@ func TestPartialStartupClosesListeners(t *testing.T) {
 func TestWildcardUDPResponseSource(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("DNS dependency does not enable destination-address control messages on Windows")
+	}
+	// Linux routes the loopback /8 locally; macOS requires an explicit alias.
+	// CI configures that alias so the source-address assertion runs on macOS.
+	probe, err := net.ListenPacket("udp4", "127.0.0.2:0")
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		t.Skip("secondary loopback address 127.0.0.2 is not configured; add a loopback alias")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
 	}
 	s := runtimeServer("0.0.0.0:0")
 	q := cacheRuntimeAnswer(s, "source.test.", 1)

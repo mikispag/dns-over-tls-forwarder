@@ -19,7 +19,7 @@ It combines persistent upstream connections, concurrent resolver queries, reques
 
 ## Try it locally
 
-Requires **Go 1.25 or newer**, system CA certificates, and outbound TCP access to your upstreams (normally port 853). Start on an unprivileged loopback port:
+Requires **Go 1.27 or newer**, system CA certificates, and outbound TCP access to your upstreams (normally port 853). Start on an unprivileged loopback port:
 
 ```sh
 git clone https://github.com/mikispag/dns-over-tls-forwarder.git

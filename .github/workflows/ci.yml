@@ -79,10 +79,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        go: ['stable', 'oldstable']
-        include:
-          - os: ubuntu-latest
-            go: '1.25.0'
+        go: ['stable', '1.27.0']
     runs-on: ${{ matrix.os }}
     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
     steps:
@@ -94,6 +91,10 @@ jobs:
       
       - name: Go build
         run: go build -v ./...
+
+      - name: Configure secondary loopback address for UDP tests
+        if: runner.os == 'macOS'
+        run: sudo ifconfig lo0 alias 127.0.0.2 netmask 255.0.0.0
         
       - name: Go test
         # Run tests with race detector on Linux stable build

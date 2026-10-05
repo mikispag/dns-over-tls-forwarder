@@ -19,6 +19,7 @@ import (
 	"github.com/gologme/log"
 
 	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnstest"
 	"codeberg.org/miekg/dns/dnsutil"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
 )
@@ -138,9 +139,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	ctx, cancel := context.WithCancel(context.Background())
 	{
 		logger := log.New(os.Stdout, "", log.Flags())
-		mux := dns.NewServeMux()
-		ts.s = NewServer(mux, logger, cacheSize, false, 60, ts.laddr, strings.Split(raddr, ",")...)
-		mux.HandleFunc(".", ts.s.ServeDNS)
+		ts.s = NewServer(nil, logger, cacheSize, false, 60, ts.laddr, strings.Split(raddr, ",")...)
 		ts.s.dial = flst.dialer()
 		go func() { _ = ts.s.Run(ctx) }()
 
@@ -178,6 +177,70 @@ func TestServer(t *testing.T) {
 	defer cleanup()
 	for _, v := range []string{"Network", "Cache"} {
 		ts.exchange(v, "42.42.42.42")
+	}
+}
+
+func TestDefaultDNSHandler(t *testing.T) {
+	s := NewServer(nil, log.New(io.Discard, "", 0), 10, false, 0, "127.0.0.1:0", "127.0.0.1:853")
+	for _, listener := range s.servers {
+		t.Run(listener.Net, func(t *testing.T) {
+			if listener.Handler != s {
+				t.Fatal("nil mux did not select the proxy as the default handler")
+			}
+			for _, name := range []string{".", "nested.example.test."} {
+				q := dns.NewMsg(name, dns.TypeA)
+				s.cache.put(q, cacheTestAnswer(t, q, name+" 300 IN A 192.0.2.1"))
+				w := dnstest.NewTestRecorder()
+				listener.Handler.ServeDNS(context.Background(), w, q)
+				if err := w.Msg.Unpack(); err != nil {
+					t.Fatal(err)
+				}
+				if w.Msg.Rcode != dns.RcodeSuccess || len(w.Msg.Answer) != 1 || w.Msg.Answer[0].Header().Name != name {
+					t.Fatalf("default handler did not answer %q: %v", name, w.Msg)
+				}
+			}
+		})
+	}
+}
+
+func TestSuppliedDNSMux(t *testing.T) {
+	mux := dns.NewServeMux()
+	mux.HandleFunc("custom.test.", func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg) {
+		if dns.Zone(ctx) != "custom.test." {
+			t.Errorf("custom handler received wrong zone: %q", dns.Zone(ctx))
+		}
+		m := cacheTestAnswer(t, q, q.Question[0].Header().Name+" 300 IN A 192.0.2.2")
+		if err := m.Pack(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.WriteTo(w); err != nil {
+			t.Fatal(err)
+		}
+	})
+	s := NewServer(mux, log.New(io.Discard, "", 0), 10, false, 0, "127.0.0.1:0", "127.0.0.1:853")
+	for _, listener := range s.servers {
+		for _, name := range []string{"sub.custom.test.", "unmatched.test."} {
+			q := dns.NewMsg(name, dns.TypeA)
+			if err := q.Pack(); err != nil {
+				t.Fatal(err)
+			}
+			incoming := &dns.Msg{Data: q.Data}
+			if err := incoming.Unpack(); err != nil {
+				t.Fatal(err)
+			}
+			w := dnstest.NewTestRecorder()
+			listener.Handler.ServeDNS(context.Background(), w, incoming)
+			if err := w.Msg.Unpack(); err != nil {
+				t.Fatal(err)
+			}
+			if name == "sub.custom.test." {
+				if w.Msg.Rcode != dns.RcodeSuccess || len(w.Msg.Answer) != 1 {
+					t.Fatalf("custom zone handler was bypassed: %v", w.Msg)
+				}
+			} else if w.Msg.Rcode != dns.RcodeRefused {
+				t.Fatalf("unmatched query bypassed custom mux policy: %v", w.Msg)
+			}
+		}
 	}
 }
 
@@ -317,15 +380,13 @@ func TestEDE(t *testing.T) {
 	// Setup Proxy Server
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
 	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
 
-	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -381,9 +442,7 @@ func TestEDNSPropagation(t *testing.T) {
 	// Setup Proxy Server with NO upstreams to force SERVFAIL
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", "127.0.0.1:1") // invalid upstream to force SERVFAIL
-	mux.HandleFunc(".", s.ServeDNS)
+	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", "127.0.0.1:1") // invalid upstream to force SERVFAIL
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -493,8 +552,7 @@ func TestConcurrencyRace(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", u1.a, u2.a)
+	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", u1.a, u2.a)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", addr)
 	}
@@ -503,7 +561,6 @@ func TestConcurrencyRace(t *testing.T) {
 	s.pools = append(s.pools, newPool(2, s.connector(u1.a)))
 	s.pools = append(s.pools, newPool(2, s.connector(u2.a)))
 
-	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -636,14 +693,12 @@ func TestNegativeCaching(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 100, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 100, false, 60, "127.0.0.1:0", raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
 	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
-	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -721,14 +776,12 @@ func TestSingleflightDeduplication(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
 	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
-	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -805,14 +858,12 @@ func TestPrivacyPaddingAndECS(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	mux := dns.NewServeMux()
-	s := NewServer(mux, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
 	s.pools = nil
 	s.pools = append(s.pools, newPool(connectionsPerUpstream, s.connector(raddr)))
-	mux.HandleFunc(".", s.ServeDNS)
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 

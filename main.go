@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"codeberg.org/miekg/dns"
 	"github.com/gologme/log"
 	"github.com/mikispag/dns-over-tls-forwarder/proxy"
 )
@@ -82,10 +81,8 @@ func run(ctx context.Context) error {
 		logger.Infof("%s v%s", path.Base(bi.Path), bi.Main.Version)
 	}
 
-	mux := dns.NewServeMux()
-	server := proxy.NewServer(mux, logger, 0, *evictMetrics, *minTTL, *addr, upstreams...)
+	server := proxy.NewServer(nil, logger, 0, *evictMetrics, *minTTL, *addr, upstreams...)
 	server.SetMaxStale(*maxStale)
-	mux.HandleFunc(".", server.ServeDNS)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
