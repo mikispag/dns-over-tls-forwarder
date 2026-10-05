@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	codeberg.org/miekg/dns v0.6.117
 	github.com/gologme/log v1.3.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
