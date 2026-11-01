@@ -1,4 +1,6 @@
-// This example demonstrates a priority queue built using the heap interface.
+// Package specialized implements a fixed-capacity, concurrency-safe cache
+// that splits its entries between a least-recently-used store and a
+// most-frequently-accessed store.
 package specialized
 
 import (
