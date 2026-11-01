@@ -90,7 +90,7 @@ Run `dns-over-tls-forwarder -h` for the built-in help.
 | --- | --- | --- |
 | `-a` | `127.0.0.1:53` | Listen address for both UDP and TCP. Set an explicit LAN address to serve network clients. |
 | `-s` | `one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8` | Upstreams to query concurrently, separated by commas. |
-| `-minTTL` | `0` | Preserve upstream answer TTLs by default. A positive value deliberately extends shorter answer TTLs, including zero TTLs. Valid range: 0–2,147,483,647 seconds. |
+| `-minTTL` | `0` | Preserve upstream TTLs by default. A positive value raises shorter TTLs, including zero, in every record of a positive answer; negative answers are unaffected. Valid range: 0–2,147,483,647 seconds. |
 | `-maxStale` | `1h` | Maximum age after expiry for eligible stale positive answers. Use `0` to disable stale serving. Accepts Go durations such as `30m`. |
 | `-metrics` | `0` | Enable metrics and JSON diagnostics on `127.0.0.1:<port>`. Zero disables HTTP. |
 | `-em` | `false` | Track recently evicted cache entries for additional diagnostics, with extra memory overhead. |

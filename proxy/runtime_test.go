@@ -289,6 +289,30 @@ func TestGetAnswerHasNoStaleWireData(t *testing.T) {
 	}
 }
 
+func TestMinTTLCoversWholeAnswer(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	s.minTTL = 300
+	now := time.Unix(1_700_000_000, 0)
+	s.cache.now = func() time.Time { return now }
+	reply := answerWith(dns.RcodeSuccess, "floor.test. 10 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		m := reply(q)
+		ns, _ := dns.New("floor.test. 5 IN NS ns.floor.test.")
+		m.Ns = []dns.RR{ns}
+		return m
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	q := dns.NewMsg("floor.test.", dns.TypeA)
+	if m := s.GetAnswer(context.Background(), q); m == nil {
+		t.Fatal("no answer")
+	}
+	now = now.Add(100 * time.Second)
+	if _, hit := s.cache.get(q); !hit {
+		t.Error("entry expired before -minTTL because of a short authority TTL")
+	}
+}
+
 func TestQueryPaddingBlockSize(t *testing.T) {
 	for _, q := range []*dns.Msg{
 		dns.NewMsg("example.org.", dns.TypeA),
