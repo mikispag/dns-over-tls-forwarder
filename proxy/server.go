@@ -26,6 +26,7 @@ import (
 const (
 	defaultCacheSize       = 65536
 	connectionTimeout      = 10 * time.Second
+	exchangeWriteTimeout   = 2 * time.Second
 	connectionsPerUpstream = 2
 	refreshQueueSize       = 2048
 	// lookupAttempts bounds rounds in which no upstream responds. A resolver
@@ -590,16 +591,18 @@ func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 	return qc, nil
 }
 
+// forwardMessageAndGetResponse races q across the upstreams and returns the
+// first NOERROR or NXDOMAIN response, or another response if none arrives.
+// Losing exchanges finish in the background so their connections stay
+// pooled; Run waits for them through s.workers.
 func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) *dns.Msg {
 	ctx, cancel := context.WithCancel(ctx)
-	var workers sync.WaitGroup
-	defer workers.Wait()
 	defer cancel()
 	resps := make(chan *dns.Msg, len(s.pools))
 	for _, p := range s.pools {
-		workers.Add(1)
+		s.workers.Add(1)
 		go func(p *pool) {
-			defer workers.Done()
+			defer s.workers.Done()
 			qc, err := prepareOutboundQuery(q)
 			if err != nil {
 				resps <- nil
@@ -643,12 +646,15 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (*dn
 	}
 }
 
+// exchangeOnce checks out a connection while ctx allows, then completes the
+// exchange even if ctx ends: reading the reply keeps the connection usable.
+// Deadlines bound the exchange, and pool shutdown closes the connection.
 func (s *Server) exchangeOnce(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, reused bool, err error) {
 	start := time.Now()
 	defer func() {
 		metricsErr := err
-		if ctx.Err() != nil {
-			metricsErr = ctx.Err()
+		if err != nil && p.ctx.Err() != nil {
+			metricsErr = context.Canceled
 		}
 		s.metrics.recordUpstream(p.addr, time.Since(start), metricsErr)
 	}()
@@ -656,16 +662,20 @@ func (s *Server) exchangeOnce(ctx context.Context, p *pool, q *dns.Msg) (resp *d
 	if err != nil {
 		return nil, false, err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	stop := context.AfterFunc(p.ctx, func() { _ = c.Close() })
 	defer func() {
-		if !stop() || err != nil || ctx.Err() != nil {
+		if !stop() || err != nil {
 			p.discard(c)
 		} else {
 			p.put(c)
 		}
 	}()
+	// The DNS client sets a read deadline but none for the write.
+	if err := c.SetWriteDeadline(time.Now().Add(exchangeWriteTimeout)); err != nil {
+		return nil, reused, err
+	}
 	client := dns.NewClient()
-	resp, _, err = client.ExchangeWithConn(ctx, q, c)
+	resp, _, err = client.ExchangeWithConn(p.ctx, q, c)
 	if err != nil {
 		return nil, reused, err
 	}

@@ -925,6 +925,39 @@ func TestFreshConnectionFailureIsNotRetriedPerUpstream(t *testing.T) {
 	}
 }
 
+func TestRaceKeepsLosingUpstreamConnection(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	reply := answerWith(dns.RcodeSuccess, "race.test. 300 IN A 192.0.2.1")
+	fast := &pipeUpstream{respond: reply}
+	slow := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		time.Sleep(300 * time.Millisecond)
+		return reply(q)
+	}}
+	s.pools = []*pool{
+		newPoolWithAddr(connectionsPerUpstream, "fast", fast.connector()),
+		newPoolWithAddr(connectionsPerUpstream, "slow", slow.connector()),
+	}
+	defer func() {
+		for _, p := range s.pools {
+			p.shutdown()
+		}
+	}()
+	for i := range 2 {
+		start := time.Now()
+		if m := s.lookup(context.Background(), dns.NewMsg("race.test.", dns.TypeA)); m == nil {
+			t.Fatalf("lookup %d failed", i)
+		}
+		if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+			t.Errorf("lookup %d took %v, waiting for the losing upstream", i, elapsed)
+		}
+		// Let the losing exchange finish and return its connection.
+		time.Sleep(500 * time.Millisecond)
+	}
+	if got := slow.dials.Load(); got != 1 {
+		t.Errorf("losing upstream dials = %d, want 1: its connection was torn down", got)
+	}
+}
+
 func TestShutdownClosesIdleTCPClients(t *testing.T) {
 	s := runtimeServer("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())

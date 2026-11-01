@@ -138,18 +138,20 @@ func TestPoolShutdownWakesWaiters(t *testing.T) {
 	}
 }
 
-func TestPoolCancellationClosesLateDialResult(t *testing.T) {
+func TestPoolParksDialAfterRequesterLeaves(t *testing.T) {
 	client, peer := net.Pipe()
 	defer func() { _ = peer.Close() }()
-	started := make(chan struct{})
-	p := newPool(1, func(ctx context.Context) (net.Conn, error) {
-		close(started)
-		<-ctx.Done()
+	started, release := make(chan struct{}), make(chan struct{})
+	var dials atomic.Int32
+	p := newPool(1, func(context.Context) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			close(started)
+		}
+		<-release
 		return client, nil
 	})
 	defer p.shutdown()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		_, err := p.get(ctx)
@@ -157,17 +159,19 @@ func TestPoolCancellationClosesLateDialResult(t *testing.T) {
 	}()
 	<-started
 	cancel()
+	close(release)
 	select {
 	case err := <-result:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("checkout error = %v, want cancellation", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("checkout did not return after cancellation")
+		t.Fatal("checkout did not return after its dial finished")
 	}
-	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
-		t.Fatalf("late connection was not closed: %v", err)
+	// The connection outlived its requester and serves the next checkout.
+	c, err := p.get(context.Background())
+	if err != nil || c != client || dials.Load() != 1 {
+		t.Fatalf("next checkout: conn reused %v, dials %d, err %v", c == client, dials.Load(), err)
 	}
 }
 

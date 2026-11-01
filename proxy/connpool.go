@@ -75,19 +75,22 @@ func (p *pool) acquire(ctx context.Context) (c net.Conn, reused bool, err error)
 		if len(p.conns)+p.dialing < p.size {
 			p.dialing++
 			p.mu.Unlock()
-			dialCtx, cancel := context.WithCancel(ctx)
-			stop := context.AfterFunc(p.ctx, cancel)
+			// Dial for the pool, not the requester: if the requester stops
+			// waiting, the connection is parked for the next checkout
+			// instead of being thrown away.
+			dialCtx, cancel := context.WithTimeout(p.ctx, connectionTimeout)
 			c, err := p.c(dialCtx)
-			stop()
 			cancel()
 			p.mu.Lock()
 			p.dialing--
-			if p.closed {
+			switch {
+			case p.closed:
 				err = errPoolClosed
-			} else if ctx.Err() != nil {
-				err = ctx.Err()
-			}
-			if err == nil {
+			case err == nil && ctx.Err() != nil:
+				p.conns[c] = false
+				p.idle = append(p.idle, c)
+				c, err = nil, ctx.Err()
+			case err == nil:
 				p.conns[c] = true
 			}
 			p.notifyLocked()
