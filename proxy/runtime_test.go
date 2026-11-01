@@ -24,6 +24,15 @@ func runtimeServer(addr string) *Server {
 	return NewServer(nil, log.New(io.Discard, "", 0), 100, false, 0, addr, "127.0.0.1:853")
 }
 
+// checkRunExit reports a Run error other than the cancellation produced by a
+// normal shutdown.
+func checkRunExit(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Errorf("Run returned unexpected error: %v", err)
+	}
+}
+
 func cacheRuntimeAnswer(s *Server, name string, count int) *dns.Msg {
 	q := dns.NewMsg(name, dns.TypeA)
 	m := new(dns.Msg)
@@ -126,7 +135,8 @@ func TestWildcardUDPResponseSource(t *testing.T) {
 	defer func() {
 		cancel()
 		select {
-		case <-done:
+		case err := <-done:
+			checkRunExit(t, err)
 		case <-time.After(2 * time.Second):
 			t.Error("shutdown timed out")
 		}
@@ -359,7 +369,8 @@ func TestShutdownCancelsTLSHandshake(t *testing.T) {
 		t.Fatalf("repeated shutdown failed: %v", err)
 	}
 	select {
-	case <-runDone:
+	case err := <-runDone:
+		checkRunExit(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("Run still active")
 	}
@@ -489,14 +500,15 @@ func TestShutdownWaitsForCanceledLookupWorkers(t *testing.T) {
 	cancel()
 	<-dialCanceled
 	select {
-	case <-runDone:
+	case err := <-runDone:
 		close(finishDial)
-		t.Fatal("Run returned before canceled lookup worker finished")
+		t.Fatalf("Run returned before canceled lookup worker finished: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(finishDial)
 	select {
-	case <-runDone:
+	case err := <-runDone:
+		checkRunExit(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("Run did not finish after lookup worker")
 	}
@@ -575,7 +587,7 @@ func TestShutdownClosesIdleTCPClients(t *testing.T) {
 	if err == nil {
 		t.Fatal("idle TCP connection still readable")
 	}
-	<-runDone
+	checkRunExit(t, <-runDone)
 }
 
 func TestUnexpectedTCPListenerFailureIsReturned(t *testing.T) {
@@ -612,8 +624,7 @@ func TestUnexpectedTCPListenerFailureIsReturned(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		cancel()
-		<-done
-		t.Fatal("Run did not detect failed TCP listener")
+		t.Fatalf("Run did not detect failed TCP listener; returned %v after cancel", <-done)
 	}
 }
 
