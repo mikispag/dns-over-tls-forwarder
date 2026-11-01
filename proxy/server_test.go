@@ -944,57 +944,61 @@ func TestPrometheusMetricsHandler(t *testing.T) {
 }
 
 func TestDeadConnectionRecovery(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Failed to listen: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-
-	var activeConns []net.Conn
-	var connMu sync.Mutex
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			connMu.Lock()
-			activeConns = append(activeConns, c)
-			connMu.Unlock()
+	// A pipe fails the query write; TCP accepts it and fails the read, after
+	// the DNS library has reused the query's buffer for the response.
+	tcpConnector := func(t *testing.T, u *pipeUpstream) connector {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-
-	addr := l.Addr().String()
-	dialCount := 0
-	p := newPoolWithAddr(2, addr, func(context.Context) (net.Conn, error) {
-		dialCount++
-		return net.Dial("tcp", addr)
-	})
-
-	// Get a connection and return it to pool
-	c1, err := p.get(context.Background())
-	if err != nil {
-		t.Fatalf("First get failed: %v", err)
+		t.Cleanup(func() { _ = l.Close() })
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				u.mu.Lock()
+				u.peers = append(u.peers, c)
+				u.mu.Unlock()
+				go u.serve(c)
+			}
+		}()
+		return func(ctx context.Context) (net.Conn, error) {
+			u.dials.Add(1)
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", l.Addr().String())
+		}
 	}
-	p.put(c1)
-
-	// Close the connection on the remote end so it becomes dead
-	time.Sleep(10 * time.Millisecond)
-	connMu.Lock()
-	for _, c := range activeConns {
-		_ = c.Close()
+	for _, transport := range []string{"pipe", "tcp"} {
+		t.Run(transport, func(t *testing.T) {
+			s := runtimeServer("127.0.0.1:0")
+			u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess, "dead.test. 300 IN A 192.0.2.1")}
+			c := u.connector()
+			if transport == "tcp" {
+				c = tcpConnector(t, u)
+			}
+			p := newPoolWithAddr(connectionsPerUpstream, "upstream", c)
+			defer p.shutdown()
+			exchange := func(desc string) {
+				t.Helper()
+				qc, err := prepareOutboundQuery(dns.NewMsg("dead.test.", dns.TypeA))
+				if err != nil {
+					t.Fatal(err)
+				}
+				r, err := s.exchangeMessages(context.Background(), p, qc)
+				if err != nil || r == nil || len(r.Answer) != 1 {
+					t.Fatalf("%s: response %v, error %v", desc, r, err)
+				}
+			}
+			exchange("first exchange")
+			// The upstream closes the idle pooled connection.
+			u.closePeers()
+			time.Sleep(10 * time.Millisecond) // let the close reach the client socket
+			exchange("exchange after the pooled connection died")
+			if got := u.dials.Load(); got != 2 {
+				t.Errorf("dials = %d, want 2", got)
+			}
+		})
 	}
-	connMu.Unlock()
-	time.Sleep(10 * time.Millisecond)
-
-	// Next get should detect that the pooled connection is dead, discard it, and dial fresh
-	c2, err := p.get(context.Background())
-	if err != nil {
-		t.Fatalf("Second get failed: %v", err)
-	}
-	if c2 == nil {
-		t.Fatal("Expected fresh connection, got nil")
-	}
-	_ = c2.Close()
-	p.shutdown()
 }

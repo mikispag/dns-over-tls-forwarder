@@ -27,6 +27,9 @@ const (
 	connectionTimeout      = 10 * time.Second
 	connectionsPerUpstream = 2
 	refreshQueueSize       = 2048
+	// lookupAttempts bounds rounds in which no upstream responds. A resolver
+	// that timed out on a slow name usually has it cached by the next round.
+	lookupAttempts = 3
 	// ednsPayloadSize is the advertised EDNS UDP payload size (DNS Flag Day 2020).
 	ednsPayloadSize = 1232
 )
@@ -509,7 +512,7 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 
 func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 	var m *dns.Msg
-	for attempt := 0; attempt <= connectionsPerUpstream && ctx.Err() == nil; attempt++ {
+	for attempt := 0; attempt < lookupAttempts && ctx.Err() == nil; attempt++ {
 		m = s.forwardMessageAndGetResponse(ctx, q)
 		if m != nil {
 			break
@@ -601,7 +604,19 @@ func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) *
 
 var errNilResponse = errors.New("nil response from upstream")
 
-func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+// exchangeMessages sends q to one upstream. Resolvers close idle connections,
+// so a failure on a pooled connection is retried on another one; a freshly
+// dialed connection's failure is final.
+func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (*dns.Msg, error) {
+	for attempt := 0; ; attempt++ {
+		resp, reused, err := s.exchangeOnce(ctx, p, q)
+		if err == nil || !reused || ctx.Err() != nil || attempt >= connectionsPerUpstream {
+			return resp, err
+		}
+	}
+}
+
+func (s *Server) exchangeOnce(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, reused bool, err error) {
 	start := time.Now()
 	defer func() {
 		metricsErr := err
@@ -610,9 +625,9 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 		}
 		s.metrics.recordUpstream(p.addr, time.Since(start), metricsErr)
 	}()
-	c, err := p.get(ctx)
+	c, reused, err := p.acquire(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer func() {
@@ -625,16 +640,16 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (res
 	client := dns.NewClient()
 	resp, _, err = client.ExchangeWithConn(ctx, q, c)
 	if err != nil {
-		return nil, err
+		return nil, reused, err
 	}
 	if resp == nil {
-		return nil, errNilResponse
+		return nil, reused, errNilResponse
 	}
 	if resp.Opcode != q.Opcode || len(resp.Question) != 1 || len(q.Question) != 1 ||
 		!strings.EqualFold(resp.Question[0].Header().Name, q.Question[0].Header().Name) ||
 		resp.Question[0].Header().Class != q.Question[0].Header().Class ||
 		dns.RRToType(resp.Question[0]) != dns.RRToType(q.Question[0]) {
-		return nil, errors.New("upstream response does not match the question")
+		return nil, reused, errors.New("upstream response does not match the question")
 	}
-	return resp, nil
+	return resp, reused, nil
 }

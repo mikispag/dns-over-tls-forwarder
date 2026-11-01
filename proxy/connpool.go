@@ -49,21 +49,28 @@ func (p *pool) notifyLocked() {
 }
 
 func (p *pool) get(ctx context.Context) (net.Conn, error) {
+	c, _, err := p.acquire(ctx)
+	return c, err
+}
+
+// acquire checks out a connection, reporting whether it was idle in the pool.
+// A reused connection may have been closed by the peer while idle.
+func (p *pool) acquire(ctx context.Context) (c net.Conn, reused bool, err error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
-			return nil, errPoolClosed
+			return nil, false, errPoolClosed
 		}
 		if n := len(p.idle); n > 0 {
 			c := p.idle[n-1]
 			p.idle = p.idle[:n-1]
 			p.conns[c] = true
 			p.mu.Unlock()
-			return c, nil
+			return c, true, nil
 		}
 		if len(p.conns)+p.dialing < p.size {
 			p.dialing++
@@ -89,13 +96,13 @@ func (p *pool) get(ctx context.Context) (net.Conn, error) {
 				_ = c.Close()
 				c = nil
 			}
-			return c, err
+			return c, false, err
 		}
 		changed := p.changed
 		p.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		case <-changed:
 		}
 	}

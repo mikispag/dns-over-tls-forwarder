@@ -66,6 +66,21 @@ func (u *pipeUpstream) dial(context.Context, string, *tls.Config) (net.Conn, err
 	return client, nil
 }
 
+func (u *pipeUpstream) connector() connector {
+	return func(ctx context.Context) (net.Conn, error) { return u.dial(ctx, "", nil) }
+}
+
+// closePeers closes the upstream side of every connection, as a resolver
+// closing idle connections would.
+func (u *pipeUpstream) closePeers() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, peer := range u.peers {
+		_ = peer.Close()
+	}
+	u.peers = nil
+}
+
 func (u *pipeUpstream) serve(peer net.Conn) {
 	defer func() { _ = peer.Close() }()
 	for {
@@ -736,6 +751,52 @@ func TestExchangeRejectsMismatchedQuestion(t *testing.T) {
 	q := dns.NewMsg("wanted.test.", dns.TypeA)
 	if _, err := s.exchangeMessages(context.Background(), p, q); err == nil {
 		t.Fatal("same-ID response with wrong question was accepted")
+	}
+}
+
+func TestStaleIdleConnectionDoesNotLoseToServfail(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	good := &pipeUpstream{respond: answerWith(dns.RcodeSuccess, "stale.test. 300 IN A 192.0.2.1")}
+	failing := &pipeUpstream{respond: answerWith(dns.RcodeServerFailure)}
+	s.pools = []*pool{
+		newPoolWithAddr(connectionsPerUpstream, "good", good.connector()),
+		newPoolWithAddr(connectionsPerUpstream, "failing", failing.connector()),
+	}
+	defer func() {
+		for _, p := range s.pools {
+			p.shutdown()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if m := s.lookup(ctx, dns.NewMsg("stale.test.", dns.TypeA)); m == nil || m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("priming lookup = %v", m)
+	}
+	// The resolver closes the idle connection; the other upstream fails fast.
+	good.closePeers()
+	m := s.lookup(ctx, dns.NewMsg("stale.test.", dns.TypeA))
+	if m == nil || m.Rcode != dns.RcodeSuccess || len(m.Answer) != 1 {
+		t.Fatalf("lookup after stale connection = %v, want the healthy upstream's answer", m)
+	}
+	if got := good.dials.Load(); got != 2 {
+		t.Errorf("healthy upstream dials = %d, want 2", got)
+	}
+}
+
+func TestFreshConnectionFailureIsNotRetriedPerUpstream(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	broken := &pipeUpstream{respond: func(*dns.Msg) *dns.Msg { return nil }}
+	p := newPoolWithAddr(connectionsPerUpstream, "broken", broken.connector())
+	defer p.shutdown()
+	qc, err := prepareOutboundQuery(dns.NewMsg("broken.test.", dns.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.exchangeMessages(context.Background(), p, qc); err == nil {
+		t.Fatal("exchange with a closing upstream succeeded")
+	}
+	if got := broken.dials.Load(); got != 1 {
+		t.Errorf("dials = %d, want 1: a fresh connection's failure is final", got)
 	}
 }
 
