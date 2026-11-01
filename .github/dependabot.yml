@@ -14,3 +14,8 @@ updates:
     time: "09:00"
     timezone: Europe/Zurich
   open-pull-requests-limit: 10
+  groups:
+    # init, autobuild, and analyze must share one version or CodeQL fails.
+    codeql-action:
+      patterns:
+      - "github/codeql-action*"
