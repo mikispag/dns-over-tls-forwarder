@@ -14,3 +14,6 @@ dns-over-tls-forwarder
 
 # Local planning and review notes
 tasks/
+
+# Local Serena project state and memories
+.serena/
