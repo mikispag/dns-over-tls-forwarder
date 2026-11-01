@@ -124,6 +124,85 @@ func TestUDPResponseLimit(t *testing.T) {
 	}
 }
 
+// wireOPTSize reads the payload size of a trailing OPT record from packed
+// data; Unpack would round a zero size up to 512.
+func wireOPTSize(data []byte) (uint16, bool) {
+	for i := len(data) - 11; i >= 12; i-- {
+		if data[i] == 0 && binary.BigEndian.Uint16(data[i+1:]) == dns.TypeOPT &&
+			i+11+int(binary.BigEndian.Uint16(data[i+9:])) == len(data) {
+			return binary.BigEndian.Uint16(data[i+3:]), true
+		}
+	}
+	return 0, false
+}
+
+func TestResponseEDNSBelongsToClient(t *testing.T) {
+	const name = "padded.test."
+	s := runtimeServer("127.0.0.1:0")
+	reply := answerWith(dns.RcodeSuccess, name+" 300 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		// Resolvers pad DoT responses (RFC 8467) and may set EDNS flags.
+		m := reply(q)
+		m.UDPSize, m.Delegation = 1232, true
+		m.Pseudo = []dns.RR{
+			&dns.EDE{InfoCode: dns.ExtendedErrorOther},
+			&dns.PADDING{Padding: strings.Repeat("00", 400)},
+		}
+		return m
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	serve := func(udpSize uint16) *dns.Msg {
+		t.Helper()
+		q := dns.NewMsg(name, dns.TypeA)
+		q.UDPSize = udpSize
+		if err := q.Pack(); err != nil {
+			t.Fatal(err)
+		}
+		w := dnstest.NewTestRecorder()
+		s.ServeDNS(context.Background(), w, q)
+		if err := w.Msg.Unpack(); err != nil {
+			t.Fatal(err)
+		}
+		if w.Msg.Truncated || len(w.Msg.Answer) != 1 {
+			t.Fatalf("UDPSize=%d: TC=%v answers=%d, wire length=%d", udpSize, w.Msg.Truncated, len(w.Msg.Answer), len(w.Msg.Data))
+		}
+		return w.Msg
+	}
+
+	r := serve(512)
+	var ede bool
+	for _, rr := range r.Pseudo {
+		switch rr.(type) {
+		case *dns.PADDING:
+			t.Error("upstream padding forwarded over unencrypted DNS")
+		case *dns.EDE:
+			ede = true
+		}
+	}
+	if !ede {
+		t.Error("extended DNS error was dropped")
+	}
+	if size, ok := wireOPTSize(r.Data); !ok || size < 512 {
+		t.Errorf("OPT payload size = %d (present %v), want at least 512", size, ok)
+	}
+	cached, _ := s.cache.get(dns.NewMsg(name, dns.TypeA))
+	if cached == nil {
+		t.Fatal("response was not cached")
+	}
+	for _, rr := range cached.Pseudo {
+		if _, ok := rr.(*dns.PADDING); ok {
+			t.Error("cached response retains upstream padding")
+		}
+	}
+
+	if r := serve(0); len(r.Pseudo) != 0 {
+		t.Errorf("non-EDNS client received options %v", r.Pseudo)
+	} else if _, ok := wireOPTSize(r.Data); ok {
+		t.Error("non-EDNS client received an OPT record")
+	}
+}
+
 func TestQueryPaddingBlockSize(t *testing.T) {
 	for _, q := range []*dns.Msg{
 		dns.NewMsg("example.org.", dns.TypeA),

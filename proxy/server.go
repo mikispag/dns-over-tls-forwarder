@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,8 @@ const (
 	connectionTimeout      = 10 * time.Second
 	connectionsPerUpstream = 2
 	refreshQueueSize       = 2048
+	// ednsPayloadSize is the advertised EDNS UDP payload size (DNS Flag Day 2020).
+	ednsPayloadSize = 1232
 )
 
 // Server is a caching DNS proxy that upgrades DNS to DNS over TLS.
@@ -292,15 +295,17 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 		// Cached/shared results must reflect this client's header flags.
 		m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
 		m.AuthenticatedData = m.AuthenticatedData && (q.AuthenticatedData || q.Security)
-		m.UDPSize, m.Security = q.UDPSize, q.Security
-		if q.UDPSize == 0 && !q.Security {
-			filtered := m.Pseudo[:0]
-			for _, rr := range m.Pseudo {
-				if _, ok := rr.(dns.EDNS0); !ok {
-					filtered = append(filtered, rr)
-				}
-			}
-			m.Pseudo = filtered
+		if q.UDPSize > 0 || q.Security || len(q.Pseudo) > 0 {
+			// The DNS library writes a zero payload size for 512 or less;
+			// packResponse still truncates to the client's own limit.
+			m.UDPSize, m.Security = max(q.UDPSize, ednsPayloadSize), q.Security
+		} else {
+			// A response carries OPT only when the query did (RFC 6891).
+			m.UDPSize, m.Security, m.CompactAnswers, m.Delegation, m.Z = 0, false, false, false, 0
+			m.Pseudo = slices.DeleteFunc(m.Pseudo, func(rr dns.RR) bool {
+				_, ok := rr.(dns.EDNS0)
+				return ok
+			})
 		}
 	}
 	if err := packResponse(m, q, network); err != nil {
@@ -514,6 +519,15 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 		s.Log.Warn("DNS upstream resolution failed")
 		return nil
 	}
+	// Padding (RFC 7830) and client subnet belong to the encrypted upstream
+	// hop; never cache them or forward them over plain DNS.
+	m.Pseudo = slices.DeleteFunc(m.Pseudo, func(rr dns.RR) bool {
+		switch rr.(type) {
+		case *dns.PADDING, *dns.SUBNET:
+			return true
+		}
+		return false
+	})
 	for _, a := range m.Answer {
 		a.Header().TTL = max(a.Header().TTL, uint32(s.minTTL))
 	}
@@ -535,7 +549,7 @@ func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 	// Include the OPT record and option header before calculating the block size.
 	padding := &dns.PADDING{}
 	qc.Pseudo = append(filtered, padding)
-	qc.UDPSize = max(1232, qc.UDPSize)
+	qc.UDPSize = max(ednsPayloadSize, qc.UDPSize)
 	if err := qc.Pack(); err != nil {
 		return nil, err
 	}
