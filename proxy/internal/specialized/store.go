@@ -119,7 +119,7 @@ func (c *store) reset(start uint) uint {
 	// A potential different strategy would be to set all times to 0 and just
 	// return, but I don't see much benefit in switching to random behavior
 	// just to save a log(n).
-	c2 := newStore(len(c.pq), c.cmp)
+	c2 := newStore(cap(c.pq), c.cmp)
 	k := start
 	end := c.Len()
 	for i := 0; i < end; i++ {

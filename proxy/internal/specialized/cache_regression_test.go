@@ -27,6 +27,40 @@ func TestRemove(t *testing.T) {
 	disabled.Remove("missing")
 }
 
+func TestPromotionPrefersRecentAccessOnTie(t *testing.T) {
+	c, _ := NewCache(4, false)
+	var now uint = 12
+	c.SetTimer(func() uint { return now })
+	// x reached MFA long ago; p was used recently. Both were accessed once.
+	c.mfa.put(1, "x", "x", 1)
+	c.mfa.put(2, "y", "y", 5)
+	c.lru.put(10, "p", "p", 1)
+	c.lru.put(11, "q", "q", 1)
+	c.Put("k", "k") // LRU overflows with p.
+	if _, ok := c.Get("p"); !ok {
+		t.Error("recently used entry was evicted instead of an older one with equal accesses")
+	}
+	if _, ok := c.Get("x"); ok {
+		t.Error("older MFA entry with equal accesses was kept")
+	}
+}
+
+func TestPutDoesNotEvictItsOwnKey(t *testing.T) {
+	for _, size := range []int{2, 3} {
+		c, _ := NewCache(size, false)
+		c.Put("a", "a")
+		c.Put("b", "b") // a moves to MFA.
+		for _, key := range []string{"a", "b", "b", "b"} {
+			c.Get(key)
+		}
+		// b outranks a and is promoted; a, accessed twice, is demoted to LRU.
+		c.Put("c", "c")
+		if _, ok := c.Get("c"); !ok {
+			t.Errorf("size %d: Put evicted the key it stored", size)
+		}
+	}
+}
+
 func TestConcurrentOperations(t *testing.T) {
 	c, _ := NewCache(128, true)
 	var wg sync.WaitGroup

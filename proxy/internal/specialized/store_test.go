@@ -270,3 +270,13 @@ func TestReset(t *testing.T) {
 		}
 	}
 }
+
+func TestResetPreservesCapacity(t *testing.T) {
+	s := newStore(4, byTime)
+	s.put(1, "a", "a", 1)
+	s.put(2, "b", "b", 1)
+	s.reset(0)
+	if got := s.cap(); got != 4 {
+		t.Fatalf("capacity after resetting a partially full store = %d, want 4", got)
+	}
+}

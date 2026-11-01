@@ -129,26 +129,28 @@ func (c *Cache) Put(k string, v Value) {
 		return
 	}
 	// LRU popped out an item because of our push.
-	// Let's promote to MFA if there is room.
+	// Let's promote to MFA if there is room. Promotion keeps the item's last
+	// access time, which breaks ties between equally accessed MFA entries.
 	if c.mfa.Len() < c.mfa.cap() {
-		c.mfa.put(now, lruovf.key, lruovf.v, lruovf.a)
+		c.mfa.put(lruovf.t, lruovf.key, lruovf.v, lruovf.a)
 		return
 	}
 	// No room in MFA.
-	// Check if the evicted item was accessed enough times to be promoted to MFA.
-	if c.mfa.peek().a > lruovf.a ||
-		c.mfa.peek().a == lruovf.a && c.mfa.peek().t < lruovf.t {
+	// Promote the evicted item only if it outranks MFA's weakest entry: more
+	// accesses, or as many and a more recent access.
+	if !c.mfa.less(c.mfa.peek(), lruovf) {
 		c.m.evict(lruovf.key)
 		return
 	}
 
-	mfaovf := c.mfa.put(now, lruovf.key, lruovf.v, lruovf.a)
+	mfaovf := c.mfa.put(lruovf.t, lruovf.key, lruovf.v, lruovf.a)
 	if mfaovf.v == nil {
 		return
 	}
 	// Pushing to MFA popped out an item. If the item was in MFA it means
 	// it is probably worth keeping around for a while longer.
-	if c.lru.Len() <= 0 || c.lru.peek().a >= mfaovf.a {
+	// With a one-slot LRU, demoting would displace the key being stored.
+	if c.lru.Len() <= 0 || c.lru.peek().key == k || c.lru.peek().a >= mfaovf.a {
 		// Evicted from MFA, no promotion
 		c.m.evict(mfaovf.key)
 		return
