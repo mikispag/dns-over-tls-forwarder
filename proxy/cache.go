@@ -142,13 +142,23 @@ func cacheableQuery(q *dns.Msg) bool {
 		return false
 	}
 	for _, rr := range q.Pseudo {
-		switch rr.(type) {
-		case *dns.PADDING, *dns.SUBNET:
-		default:
+		if !strippedOption(rr) {
 			return false
 		}
 	}
 	return true
+}
+
+// strippedOption reports EDNS options the forwarder never forwards in either
+// direction: per-hop transport state (cookies, keepalive, padding, key tags),
+// server-identity requests, and client subnet, for privacy. Queries carrying
+// only these can share cached answers.
+func strippedOption(rr dns.RR) bool {
+	switch rr.(type) {
+	case *dns.COOKIE, *dns.KEYTAG, *dns.NSID, *dns.PADDING, *dns.SUBNET, *dns.TCPKEEPALIVE:
+		return true
+	}
+	return false
 }
 
 func staleAllowed(q, m *dns.Msg) bool {

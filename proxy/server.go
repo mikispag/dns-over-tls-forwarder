@@ -537,15 +537,9 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 		s.Log.Warn("DNS upstream resolution failed")
 		return nil
 	}
-	// Padding (RFC 7830) and client subnet belong to the encrypted upstream
-	// hop; never cache them or forward them over plain DNS.
-	m.Pseudo = slices.DeleteFunc(m.Pseudo, func(rr dns.RR) bool {
-		switch rr.(type) {
-		case *dns.PADDING, *dns.SUBNET:
-			return true
-		}
-		return false
-	})
+	// Upstream padding (RFC 7830) and other per-hop options must not be
+	// cached or forwarded over plain DNS.
+	m.Pseudo = slices.DeleteFunc(m.Pseudo, strippedOption)
 	for _, a := range m.Answer {
 		a.Header().TTL = max(a.Header().TTL, uint32(s.minTTL))
 	}
@@ -556,17 +550,9 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 	qc := CloneMsg(q)
 	qc.Data = nil
-	filtered := qc.Pseudo[:0]
-	for _, rr := range qc.Pseudo {
-		switch rr.(type) {
-		case *dns.SUBNET, *dns.PADDING:
-		default:
-			filtered = append(filtered, rr)
-		}
-	}
 	// Include the OPT record and option header before calculating the block size.
 	padding := &dns.PADDING{}
-	qc.Pseudo = append(filtered, padding)
+	qc.Pseudo = append(slices.DeleteFunc(qc.Pseudo, strippedOption), padding)
 	qc.UDPSize = max(ednsPayloadSize, qc.UDPSize)
 	if err := qc.Pack(); err != nil {
 		return nil, err

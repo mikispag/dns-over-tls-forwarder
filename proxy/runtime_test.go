@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"runtime"
@@ -219,6 +220,51 @@ func TestResponseEDNSBelongsToClient(t *testing.T) {
 		t.Errorf("non-EDNS client received options %v", r.Pseudo)
 	} else if _, ok := wireOPTSize(r.Data); ok {
 		t.Error("non-EDNS client received an OPT record")
+	}
+}
+
+func TestTransportOptionsDoNotBypassCache(t *testing.T) {
+	const name = "cookie.test."
+	s := runtimeServer("127.0.0.1:0")
+	var mu sync.Mutex
+	var forwarded [][]string
+	reply := answerWith(dns.RcodeSuccess, name+" 300 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		var opts []string
+		for _, rr := range q.Pseudo {
+			opts = append(opts, fmt.Sprintf("%T", rr))
+		}
+		mu.Lock()
+		forwarded = append(forwarded, opts)
+		mu.Unlock()
+		return reply(q)
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	// dig and recursive resolvers send a fresh client cookie with each query.
+	for _, cookie := range []string{"0102030405060708", "1112131415161718"} {
+		q := dns.NewMsg(name, dns.TypeA)
+		q.UDPSize = 1232
+		q.Pseudo = []dns.RR{&dns.COOKIE{Cookie: cookie}, &dns.NSID{}, &dns.TCPKEEPALIVE{}}
+		if err := q.Pack(); err != nil {
+			t.Fatal(err)
+		}
+		w := dnstest.NewTestRecorder()
+		s.ServeDNS(context.Background(), w, q)
+		if err := w.Msg.Unpack(); err != nil {
+			t.Fatal(err)
+		}
+		if len(w.Msg.Answer) != 1 {
+			t.Fatalf("cookie %s: no answer", cookie)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(forwarded) != 1 {
+		t.Fatalf("upstream queries = %d, want 1: transport options bypassed the cache", len(forwarded))
+	}
+	if got := strings.Join(forwarded[0], ","); got != "*dns.PADDING" {
+		t.Errorf("forwarded options = %s, want only the forwarder's padding", got)
 	}
 }
 

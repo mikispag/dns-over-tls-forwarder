@@ -83,7 +83,8 @@ func TestCacheRejectsUncacheableResponses(t *testing.T) {
 func TestCacheUnknownEDNSBypass(t *testing.T) {
 	c, _ := newCache(10, false)
 	q := dns.NewMsg("example.test.", dns.TypeA)
-	q.Pseudo = []dns.RR{new(dns.COOKIE)}
+	// A zone-version request expects a response from the answering server.
+	q.Pseudo = []dns.RR{new(dns.ZONEVERSION)}
 	c.put(q, cacheTestAnswer(t, q, "example.test. 300 IN A 192.0.2.1"))
 	if got, hit := c.get(q); hit || got != nil {
 		t.Fatal("cached client-specific EDNS response")
