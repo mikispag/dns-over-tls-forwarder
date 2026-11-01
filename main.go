@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	// Absolute maximum TTL to cache, set to 2^31 - 1. See: https://tools.ietf.org/html/rfc1034.
+	// Largest valid TTL, 2^31 - 1 (RFC 2181, Section 8).
 	absoluteMaxTTL = 2147483647
 )
 
@@ -78,7 +78,7 @@ func run(ctx context.Context) error {
 		logger.EnableLevel("debug")
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		logger.Infof("%s v%s", path.Base(bi.Path), bi.Main.Version)
+		logger.Infof("%s %s", path.Base(bi.Path), bi.Main.Version)
 	}
 
 	server := proxy.NewServer(nil, logger, 0, *evictMetrics, *minTTL, *addr, upstreams...)
