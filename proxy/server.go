@@ -31,6 +31,9 @@ const (
 	// lookupAttempts bounds rounds in which no upstream responds. A resolver
 	// that timed out on a slow name usually has it cached by the next round.
 	lookupAttempts = 3
+	// maxPendingLookups bounds upstream lookups in flight; further cache
+	// misses fail immediately with SERVFAIL.
+	maxPendingLookups = 1024
 	// ednsPayloadSize is the advertised EDNS UDP payload size and the largest
 	// UDP reply (DNS Flag Day 2020).
 	ednsPayloadSize = 1232
@@ -42,6 +45,7 @@ type Server struct {
 	cache   *cache
 	pools   []*pool
 	rq      chan *dns.Msg
+	lookups chan struct{} // slots for pending upstream lookups
 	dial    func(context.Context, string, *tls.Config) (net.Conn, error)
 	minTTL  int
 
@@ -87,8 +91,9 @@ func NewServer(mux *dns.ServeMux, logger *log.Logger, cacheSize int, evictMetric
 			// because replies are written from a new message.
 			{Addr: addr, Net: "udp", Handler: mux},
 		},
-		cache: cache,
-		rq:    make(chan *dns.Msg, refreshQueueSize),
+		cache:   cache,
+		rq:      make(chan *dns.Msg, refreshQueueSize),
+		lookups: make(chan struct{}, maxPendingLookups),
 		dial: func(ctx context.Context, addr string, cfg *tls.Config) (net.Conn, error) {
 			dialer := tls.Dialer{Config: cfg}
 			return dialer.DialContext(ctx, "tcp", addr)
@@ -376,6 +381,7 @@ type debugStats struct {
 	CacheRefreshesCompleted uint64
 	CacheRefreshesDropped   uint64
 	Deduplicated            uint64
+	LookupsRejected         uint64
 }
 
 // DebugHandler returns an http.Handler that serves debug stats.
@@ -401,6 +407,7 @@ func (s *Server) DebugHandler() http.Handler {
 			CacheRefreshesCompleted: s.metrics.CacheRefreshesCompleted.Load(),
 			CacheRefreshesDropped:   s.metrics.CacheRefreshesDropped.Load(),
 			Deduplicated:            s.metrics.SingleflightDeduplicated.Load(),
+			LookupsRejected:         s.metrics.LookupsRejected.Load(),
 		}, "", " ")
 		if err != nil {
 			http.Error(w, "Unable to retrieve debug info", http.StatusInternalServerError)
@@ -526,6 +533,15 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 }
 
 func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
+	// Lookups queue for a few pooled connections per upstream. Failing fast
+	// beyond the limit keeps memory bounded under floods of unique names.
+	select {
+	case s.lookups <- struct{}{}:
+		defer func() { <-s.lookups }()
+	default:
+		s.metrics.LookupsRejected.Add(1)
+		return nil
+	}
 	var m *dns.Msg
 	for attempt := 0; attempt < lookupAttempts && ctx.Err() == nil; attempt++ {
 		m = s.forwardMessageAndGetResponse(ctx, q)

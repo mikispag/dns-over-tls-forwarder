@@ -586,6 +586,32 @@ func TestGetAnswerReturnsCallerIdentity(t *testing.T) {
 	check("cache hit", s.GetAnswer(context.Background(), hitQ), hitQ)
 }
 
+func TestPendingLookupsBounded(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess, "busy.test. 300 IN A 192.0.2.1")}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	s.lookups = make(chan struct{}, 1)
+	s.lookups <- struct{}{} // Another lookup holds the only slot.
+	start := time.Now()
+	if m := s.GetAnswer(context.Background(), dns.NewMsg("busy.test.", dns.TypeA)); m != nil {
+		t.Fatal("lookup ran beyond the pending limit")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("rejected lookup took %v, want an immediate failure", elapsed)
+	}
+	if got := u.dials.Load(); got != 0 {
+		t.Errorf("upstream dials = %d, want 0", got)
+	}
+	if got := s.metrics.LookupsRejected.Load(); got != 1 {
+		t.Errorf("rejected lookups = %d, want 1", got)
+	}
+	<-s.lookups
+	if m := s.GetAnswer(context.Background(), dns.NewMsg("busy.test.", dns.TypeA)); m == nil {
+		t.Fatal("lookup failed after a slot was released")
+	}
+}
+
 func TestShutdownCancelsTLSHandshake(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

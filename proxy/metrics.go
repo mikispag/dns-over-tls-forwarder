@@ -33,6 +33,7 @@ type ServerMetrics struct {
 	CacheRefreshesDropped   atomic.Uint64
 
 	SingleflightDeduplicated atomic.Uint64
+	LookupsRejected          atomic.Uint64
 
 	upstreamMu    sync.Mutex
 	upstreamStats map[string]*upstreamStat
@@ -159,6 +160,10 @@ func (s *Server) PrometheusHandler() http.Handler {
 		fmt.Fprintf(&buf, "# HELP dns_singleflight_deduplications_total Total number of concurrent duplicate upstream requests deduplicated.\n")
 		fmt.Fprintf(&buf, "# TYPE dns_singleflight_deduplications_total counter\n")
 		fmt.Fprintf(&buf, "dns_singleflight_deduplications_total %d\n\n", s.metrics.SingleflightDeduplicated.Load())
+
+		fmt.Fprintf(&buf, "# HELP dns_lookups_rejected_total Total cache misses failed immediately because too many upstream lookups were pending.\n")
+		fmt.Fprintf(&buf, "# TYPE dns_lookups_rejected_total counter\n")
+		fmt.Fprintf(&buf, "dns_lookups_rejected_total %d\n\n", s.metrics.LookupsRejected.Load())
 
 		s.metrics.upstreamMu.Lock()
 		if len(s.metrics.upstreamStats) > 0 {
