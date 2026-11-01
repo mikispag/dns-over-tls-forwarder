@@ -192,7 +192,7 @@ func (s *Server) Run(ctx context.Context) (runErr error) {
 		ready := make(chan error, 1)
 		if srv.Net == "tcp" {
 			srv.ListenFunc = func(srv *dns.Server) {
-				listener := newTrackedListener(srv.Listener).(*trackedListener)
+				listener := newTrackedListener(srv.Listener, maxTCPClients).(*trackedListener)
 				srv.Listener = listener
 				// The DNS library retries Accept errors indefinitely; stop on an
 				// unexpected failure instead of leaving a dead listener spinning.

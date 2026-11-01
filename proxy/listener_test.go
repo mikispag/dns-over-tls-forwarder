@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -14,7 +16,7 @@ func TestTrackedListenerCloseWaitsForReaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := newTrackedListener(raw)
+	l := newTrackedListener(raw, maxTCPClients)
 	client, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +86,7 @@ func TestTrackedListenerRejectsLateAccept(t *testing.T) {
 		t.Fatal(err)
 	}
 	delayed := &delayedAcceptListener{Listener: raw, accepted: make(chan struct{}), release: make(chan struct{})}
-	l := newTrackedListener(delayed)
+	l := newTrackedListener(delayed, maxTCPClients)
 	defer func() { _ = l.Close() }()
 	accepted := make(chan error, 1)
 	go func() {
@@ -115,5 +117,88 @@ func TestTrackedListenerRejectsLateAccept(t *testing.T) {
 	_ = client.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("late connection was not closed: %v", err)
+	}
+}
+
+// failingListener returns the queued errors before accepting normally.
+type failingListener struct {
+	net.Listener
+	errs []error
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if len(l.errs) > 0 {
+		err := l.errs[0]
+		l.errs = l.errs[1:]
+		return nil, err
+	}
+	return l.Listener.Accept()
+}
+
+func TestTrackedListenerRetriesTransientErrors(t *testing.T) {
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingListener{Listener: raw, errs: []error{
+		&net.OpError{Op: "accept", Err: os.NewSyscallError("accept", syscall.EMFILE)},
+		&net.OpError{Op: "accept", Err: os.NewSyscallError("accept", syscall.ECONNABORTED)},
+	}}
+	l := newTrackedListener(failing, maxTCPClients).(*trackedListener)
+	defer func() { _ = l.Close() }()
+	client, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept after transient errors: %v", err)
+	}
+	_ = conn.Close()
+	select {
+	case err := <-l.acceptErr:
+		t.Fatalf("transient error reported as fatal: %v", err)
+	default:
+	}
+}
+
+func TestTrackedListenerBoundsClients(t *testing.T) {
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := newTrackedListener(raw, 1)
+	defer func() { _ = l.Close() }()
+	for range 2 {
+		c, err := net.Dial("tcp", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	first, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan net.Conn, 1)
+	go func() {
+		c, _ := l.Accept()
+		second <- c
+	}()
+	select {
+	case <-second:
+		t.Fatal("accepted a client beyond the limit")
+	case <-time.After(50 * time.Millisecond):
+	}
+	_ = first.Close()
+	select {
+	case c := <-second:
+		if c == nil {
+			t.Fatal("accept failed after a slot was released")
+		}
+		_ = c.Close()
+	case <-time.After(time.Second):
+		t.Fatal("closing a client did not release its slot")
 	}
 }
