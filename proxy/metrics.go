@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -91,12 +93,12 @@ func (s *Server) PrometheusHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
-		s.mu.Lock()
+		s.mu.RLock()
 		uptimeSeconds := 0.0
 		if !s.startTime.IsZero() {
 			uptimeSeconds = time.Since(s.startTime).Seconds()
 		}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 
 		cacheLen := 0
 		cacheCap := 0
@@ -160,20 +162,22 @@ func (s *Server) PrometheusHandler() http.Handler {
 
 		s.metrics.upstreamMu.Lock()
 		if len(s.metrics.upstreamStats) > 0 {
+			// Sorted labels keep scrapes stable and comparable.
+			upstreams := slices.Sorted(maps.Keys(s.metrics.upstreamStats))
 			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total upstream exchange attempts, including connection acquisition failures.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_requests_total counter\n")
-			for u, stat := range s.metrics.upstreamStats {
-				fmt.Fprintf(&buf, "dns_upstream_requests_total{upstream=%q} %d\n", u, stat.requests.Load())
+			for _, u := range upstreams {
+				fmt.Fprintf(&buf, "dns_upstream_requests_total{upstream=%q} %d\n", u, s.metrics.upstreamStats[u].requests.Load())
 			}
 			fmt.Fprintf(&buf, "\n# HELP dns_upstream_errors_total Total upstream transport and protocol failures, excluding canceled lookups.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_errors_total counter\n")
-			for u, stat := range s.metrics.upstreamStats {
-				fmt.Fprintf(&buf, "dns_upstream_errors_total{upstream=%q} %d\n", u, stat.errors.Load())
+			for _, u := range upstreams {
+				fmt.Fprintf(&buf, "dns_upstream_errors_total{upstream=%q} %d\n", u, s.metrics.upstreamStats[u].errors.Load())
 			}
 			fmt.Fprintf(&buf, "\n# HELP dns_upstream_duration_seconds_total Total duration in seconds spent waiting for upstream responses.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_duration_seconds_total counter\n")
-			for u, stat := range s.metrics.upstreamStats {
-				durSec := float64(stat.duration.Load()) / 1e9
+			for _, u := range upstreams {
+				durSec := float64(s.metrics.upstreamStats[u].duration.Load()) / 1e9
 				fmt.Fprintf(&buf, "dns_upstream_duration_seconds_total{upstream=%q} %.6f\n", u, durSec)
 			}
 			fmt.Fprintf(&buf, "\n")
