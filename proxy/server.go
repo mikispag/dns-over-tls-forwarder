@@ -289,8 +289,7 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 			dnsutil.SetReply(m, q)
 			m.Rcode = dns.RcodeServerFailure
 		}
-		// Cached/shared results must reflect this client's header and question spelling.
-		m.ID, m.Question = q.ID, []dns.RR{q.Question[0].Clone()}
+		// Cached/shared results must reflect this client's header flags.
 		m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
 		m.AuthenticatedData = m.AuthenticatedData && (q.AuthenticatedData || q.Security)
 		m.UDPSize, m.Security = q.UDPSize, q.Security
@@ -388,25 +387,29 @@ func (s *Server) DebugHandler() http.Handler {
 	})
 }
 
+// GetAnswer resolves q from the cache or the upstreams. A non-nil result
+// carries q's ID and question spelling; nil means resolution failed.
 func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
 	if q == nil || len(q.Question) != 1 || q.Question[0] == nil {
 		return nil
 	}
 	m, ok := s.cache.get(q)
-	// Cache HIT.
-	if ok {
+	switch {
+	case ok:
 		s.metrics.CacheHits.Add(1)
-		return m
-	}
-	// If there is a cache HIT with an expired TTL, speculatively return the cache entry anyway with a short TTL, and refresh it.
-	if !ok && m != nil {
+	case m != nil:
+		// Serve an expired entry with a short TTL while it is refreshed.
 		s.metrics.CacheStaleHits.Add(1)
 		s.refresh(q)
-		return m
+	default:
+		s.metrics.CacheMisses.Add(1)
+		m = s.forwardMessageAndCacheResponse(ctx, q)
 	}
-	// If there is a cache MISS, forward the message upstream (with TTL rewritten) and return the answer.
-	s.metrics.CacheMisses.Add(1)
-	return s.forwardMessageAndCacheResponse(ctx, q)
+	if m != nil {
+		// Cached and shared results may come from another client's query.
+		m.ID, m.Question = q.ID, []dns.RR{q.Question[0].Clone()}
+	}
+	return m
 }
 
 func (s *Server) refresh(q *dns.Msg) {

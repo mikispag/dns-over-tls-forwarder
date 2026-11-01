@@ -9,6 +9,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -43,6 +44,65 @@ func cacheRuntimeAnswer(s *Server, name string, count int) *dns.Msg {
 	}
 	s.cache.put(q, m)
 	return q
+}
+
+// pipeUpstream serves DNS over in-memory connections. respond builds each
+// reply; returning nil closes the connection without answering.
+type pipeUpstream struct {
+	respond func(q *dns.Msg) *dns.Msg
+	dials   atomic.Int32
+
+	mu    sync.Mutex
+	peers []net.Conn
+}
+
+func (u *pipeUpstream) dial(context.Context, string, *tls.Config) (net.Conn, error) {
+	u.dials.Add(1)
+	client, peer := net.Pipe()
+	u.mu.Lock()
+	u.peers = append(u.peers, peer)
+	u.mu.Unlock()
+	go u.serve(peer)
+	return client, nil
+}
+
+func (u *pipeUpstream) serve(peer net.Conn) {
+	defer func() { _ = peer.Close() }()
+	for {
+		q := new(dns.Msg)
+		if _, err := q.ReadFrom(peer); err != nil {
+			return
+		}
+		if err := q.Unpack(); err != nil {
+			return
+		}
+		m := u.respond(q)
+		if m == nil {
+			return
+		}
+		if err := m.Pack(); err != nil {
+			return
+		}
+		frame := make([]byte, 2, len(m.Data)+2)
+		binary.BigEndian.PutUint16(frame, uint16(len(m.Data)))
+		if _, err := peer.Write(append(frame, m.Data...)); err != nil {
+			return
+		}
+	}
+}
+
+// answerWith replies to every query with the given records and rcode.
+func answerWith(rcode uint16, records ...string) func(q *dns.Msg) *dns.Msg {
+	return func(q *dns.Msg) *dns.Msg {
+		m := new(dns.Msg)
+		dnsutil.SetReply(m, q)
+		m.Rcode = rcode
+		for _, text := range records {
+			rr, _ := dns.New(text)
+			m.Answer = append(m.Answer, rr)
+		}
+		return m
+	}
 }
 
 func TestUDPResponseLimit(t *testing.T) {
@@ -322,6 +382,60 @@ func TestCanceledSingleflightCallerDoesNotCancelOtherWaiters(t *testing.T) {
 	if got := s.metrics.SingleflightDeduplicated.Load(); got != 1 {
 		t.Errorf("deduplicated followers=%d, want 1", got)
 	}
+}
+
+func TestGetAnswerReturnsCallerIdentity(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	defer stopServer()
+	s.runContext = serverCtx
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	reply := answerWith(dns.RcodeSuccess, "shared.test. 300 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		started <- struct{}{}
+		<-release
+		return reply(q)
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+
+	newQuery := func(name string, id uint16) *dns.Msg {
+		q := dns.NewMsg(name, dns.TypeA)
+		q.ID = id
+		return q
+	}
+	check := func(desc string, m, q *dns.Msg) {
+		t.Helper()
+		if m == nil {
+			t.Fatalf("%s: no answer", desc)
+		}
+		if m.ID != q.ID || m.Question[0].Header().Name != q.Question[0].Header().Name {
+			t.Errorf("%s: got ID %d question %q, want ID %d question %q", desc,
+				m.ID, m.Question[0].Header().Name, q.ID, q.Question[0].Header().Name)
+		}
+	}
+	leaderQ, followerQ := newQuery("Shared.Test.", 0x1111), newQuery("shared.test.", 0x2222)
+	leader, follower := make(chan *dns.Msg, 1), make(chan *dns.Msg, 1)
+	go func() { leader <- s.GetAnswer(context.Background(), leaderQ) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("lookup did not start")
+	}
+	go func() { follower <- s.GetAnswer(context.Background(), followerQ) }()
+	deadline := time.Now().Add(time.Second)
+	for s.metrics.CacheMisses.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	check("leader", <-leader, leaderQ)
+	check("deduplicated follower", <-follower, followerQ)
+	if got := u.dials.Load(); got != 1 {
+		t.Errorf("upstream dials=%d, want 1", got)
+	}
+	hitQ := newQuery("SHARED.test.", 0x3333)
+	check("cache hit", s.GetAnswer(context.Background(), hitQ), hitQ)
 }
 
 func TestShutdownCancelsTLSHandshake(t *testing.T) {
