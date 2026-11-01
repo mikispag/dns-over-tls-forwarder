@@ -81,7 +81,10 @@ func NewServer(mux *dns.ServeMux, logger *log.Logger, cacheSize int, evictMetric
 	s := &Server{
 		servers: []*dns.Server{
 			{Addr: addr, Net: "tcp", Handler: mux},
-			{Addr: addr, Net: "udp", Handler: mux, UDPSize: dns.MaxMsgSize},
+			// The default 1400-byte read buffer fits any realistic query. The
+			// library allocates it per packet and never reclaims it here,
+			// because replies are written from a new message.
+			{Addr: addr, Net: "udp", Handler: mux},
 		},
 		cache: cache,
 		rq:    make(chan *dns.Msg, refreshQueueSize),
