@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 	"time"
 
@@ -338,5 +339,23 @@ func TestCacheableQueryRejectsMetaTypes(t *testing.T) {
 		if !cacheableQuery(wireQuery(t, "example.test.", qtype)) {
 			t.Errorf("type %d is no longer cacheable", qtype)
 		}
+	}
+}
+
+func TestCacheSkipsOversizedResponses(t *testing.T) {
+	c, _ := newCache(10, false)
+	q := dns.NewMsg("big.test.", dns.TypeA)
+	c.put(q, cacheTestAnswer(t, q, "big.test. 300 IN A 192.0.2.1"))
+	records := make([]string, 300)
+	for i := range records {
+		records[i] = fmt.Sprintf("big.test. 300 IN A 192.0.2.%d", i%250)
+	}
+	big := cacheTestAnswer(t, q, records...)
+	if big.Len() <= maxCachedMsgSize {
+		t.Fatalf("test response is only %d bytes", big.Len())
+	}
+	c.put(q, big)
+	if got, _ := c.get(q); got != nil {
+		t.Fatalf("cached a %d-byte response, or kept the stale smaller one", big.Len())
 	}
 }

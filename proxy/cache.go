@@ -11,6 +11,9 @@ import (
 const (
 	// Maximum TTL to cache, set to 2^31 - 1 (RFC 2181, Section 8).
 	maxTTL = 2147483647 * time.Second
+	// maxCachedMsgSize is the largest response cached, in uncompressed wire
+	// bytes; over three times the largest UDP reply.
+	maxCachedMsgSize = 4096
 )
 
 type cache struct {
@@ -77,6 +80,12 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 		return
 	}
 	if v.Truncated {
+		return
+	}
+	// Bound per-entry memory: unique names with huge answers could otherwise
+	// pin gigabytes. Larger responses are still served, just not cached.
+	if v.Len() > maxCachedMsgSize {
+		c.c.Remove(cacheKey)
 		return
 	}
 
