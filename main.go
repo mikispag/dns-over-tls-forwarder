@@ -29,7 +29,7 @@ var (
 	debugLog        = flag.Bool("d", false, "print debug log messages")
 	upstreamServers = flag.String("s", "one.one.one.one:853@1.1.1.1,dns.google:853@8.8.8.8", "comma-separated list of upstream servers")
 	logPath         = flag.String("l", "", "log file path")
-	minTTL          = flag.Int("minTTL", 0, "minimum answer TTL in seconds; zero preserves upstream TTLs")
+	minTTL          = flag.Int("minTTL", 0, "minimum TTL in seconds for records of positive answers; zero preserves upstream TTLs")
 	maxStale        = flag.Duration("maxStale", time.Hour, "maximum age after expiry for eligible stale answers; zero disables stale serving")
 	evictMetrics    = flag.Bool("em", false, "collect metrics on evictions")
 	addr            = flag.String("a", "127.0.0.1:53", "`address:port` to listen on over UDP and TCP; use a LAN address for network clients")
