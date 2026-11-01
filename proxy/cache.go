@@ -1,7 +1,8 @@
 package proxy
 
 import (
-	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"codeberg.org/miekg/dns"
@@ -201,28 +202,39 @@ func positiveAnswer(q, m *dns.Msg) bool {
 // key identifies a question and the header flags that select a response policy.
 // The type is explicit because the DNS library formats meta-type questions
 // without it, and names compare case-insensitively (RFC 4343).
+// key identifies a question and the header flags that select a response policy.
+// The type is explicit because the DNS library formats meta-type questions
+// without it, and names compare case-insensitively (RFC 4343). Only ASCII is
+// folded: strings.ToLower would replace invalid UTF-8 bytes and could make
+// distinct names collide. The key is built without fmt because every query
+// computes it.
 func key(k *dns.Msg) string {
 	if k == nil || len(k.Question) == 0 || k.Question[0] == nil {
 		return ""
 	}
 	q := k.Question[0]
-	return fmt.Sprintf("%s:%d:%d:do=%t:cd=%t:rd=%t:ad=%t", asciiLower(q.Header().Name), q.Header().Class, dns.RRToType(q),
-		k.Security, k.CheckingDisabled, k.RecursionDesired, k.AuthenticatedData)
-}
-
-// asciiLower folds only ASCII letters. strings.ToLower would replace invalid
-// UTF-8 bytes in a name and could make distinct names collide.
-func asciiLower(s string) string {
-	for i := 0; i < len(s); i++ {
-		if 'A' <= s[i] && s[i] <= 'Z' {
-			b := []byte(s)
-			for j := i; j < len(b); j++ {
-				if 'A' <= b[j] && b[j] <= 'Z' {
-					b[j] += 'a' - 'A'
-				}
-			}
-			return string(b)
+	name := q.Header().Name
+	flags := byte('0')
+	for bit, set := range []bool{k.Security, k.CheckingDisabled, k.RecursionDesired, k.AuthenticatedData} {
+		if set {
+			flags |= 1 << bit
 		}
 	}
-	return s
+	var sb strings.Builder
+	sb.Grow(len(name) + 14)
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		sb.WriteByte(c)
+	}
+	var num [5]byte
+	sb.WriteByte(':')
+	sb.Write(strconv.AppendUint(num[:0], uint64(q.Header().Class), 10))
+	sb.WriteByte(':')
+	sb.Write(strconv.AppendUint(num[:0], uint64(dns.RRToType(q)), 10))
+	sb.WriteByte(':')
+	sb.WriteByte(flags)
+	return sb.String()
 }
