@@ -101,7 +101,7 @@ The CLI uses a fixed cache capacity. The Go constructor accepts a cache size for
 
 ## Running with systemd
 
-The supplied [service unit](debian/dns-over-tls-forwarder.service) uses a dynamic user and grants `CAP_NET_BIND_SERVICE` to bind port 53 without running the service as root. It binds to loopback by default.
+The supplied [service unit](debian/dns-over-tls-forwarder.service) uses a dynamic user and grants `CAP_NET_BIND_SERVICE` to bind port 53 without running the service as root, under systemd sandboxing and a system call filter. It orders itself before `nss-lookup.target`, like other local resolvers, and binds to loopback by default.
 
 To install the service with metrics enabled, copy the binary and unit and add a drop-in:
 
