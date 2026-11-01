@@ -273,7 +273,7 @@ func TestQueryPaddingBlockSize(t *testing.T) {
 		dns.NewMsg("example.org.", dns.TypeA),
 		dns.NewMsg(strings.Repeat("a", 63)+"."+strings.Repeat("b", 31)+".", dns.TypeA),
 	} {
-		for _, size := range []uint16{0, 1232} {
+		for _, size := range []uint16{0, 1232, 65535} {
 			q.UDPSize = size
 			out, err := prepareOutboundQuery(q)
 			if err != nil {
@@ -281,6 +281,10 @@ func TestQueryPaddingBlockSize(t *testing.T) {
 			}
 			if len(out.Data)%128 != 0 {
 				t.Errorf("UDPSize=%d: wire length=%d", size, len(out.Data))
+			}
+			// The DNS client preallocates a response buffer of this size.
+			if out.UDPSize != ednsPayloadSize {
+				t.Errorf("UDPSize=%d: upstream query advertises %d, want %d", size, out.UDPSize, ednsPayloadSize)
 			}
 			found := false
 			for _, rr := range out.Pseudo {

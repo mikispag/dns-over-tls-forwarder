@@ -553,7 +553,9 @@ func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 	// Include the OPT record and option header before calculating the block size.
 	padding := &dns.PADDING{}
 	qc.Pseudo = append(slices.DeleteFunc(qc.Pseudo, strippedOption), padding)
-	qc.UDPSize = max(ednsPayloadSize, qc.UDPSize)
+	// The payload size is meaningless over TLS, but the DNS client
+	// preallocates a response buffer of this size.
+	qc.UDPSize = ednsPayloadSize
 	if err := qc.Pack(); err != nil {
 		return nil, err
 	}
