@@ -92,6 +92,16 @@ func FuzzCache(f *testing.F) {
 		}
 		c, _ := NewCache(int(size%128)+2, true)
 		values := make(map[string]int)
+		var hits, misses uint
+		get := func(key string) (Value, bool) {
+			v, ok := c.Get(key)
+			if ok {
+				hits++
+			} else {
+				misses++
+			}
+			return v, ok
+		}
 		for i := 0; i+1 < len(data); i += 2 {
 			key := string(rune(data[i+1]))
 			switch data[i] % 3 {
@@ -99,11 +109,11 @@ func FuzzCache(f *testing.F) {
 				c.Put(key, i)
 				values[key] = i
 				// At capacity the admission policy may prefer an older hot item.
-				if got, ok := c.Get(key); (!ok && c.Len() < c.Cap()) || (ok && got != i) {
+				if got, ok := get(key); (!ok && c.Len() < c.Cap()) || (ok && got != i) {
 					t.Fatalf("incorrect put result: got=%v hit=%v len=%d", got, ok, c.Len())
 				}
 			case 1:
-				got, ok := c.Get(key)
+				got, ok := get(key)
 				want, known := values[key]
 				if ok && (!known || got != want) {
 					t.Fatalf("unexpected cached value: got=%v want=%v known=%v", got, want, known)
@@ -111,13 +121,16 @@ func FuzzCache(f *testing.F) {
 			case 2:
 				c.Remove(key)
 				delete(values, key)
-				if _, ok := c.Get(key); ok {
+				if _, ok := get(key); ok {
 					t.Fatal("removed key still present")
 				}
 			}
 			if c.Len() > c.Cap() {
 				t.Fatal("capacity exceeded")
 			}
+		}
+		if m := c.Metrics(); m.Hit() != hits || m.Miss != misses {
+			t.Fatalf("metrics report %d hits and %d misses, observed %d and %d", m.Hit(), m.Miss, hits, misses)
 		}
 	})
 }
