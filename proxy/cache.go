@@ -134,7 +134,12 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 
 // Only options normalized before forwarding can safely share cached responses.
 func cacheableQuery(q *dns.Msg) bool {
-	if q == nil || len(q.Question) != 1 || q.Opcode != dns.OpcodeQuery || q.Version != 0 || q.CompactAnswers || q.Delegation || len(q.Answer)+len(q.Ns)+len(q.Extra) != 0 {
+	if q == nil || len(q.Question) != 1 || q.Question[0] == nil || q.Opcode != dns.OpcodeQuery || q.Version != 0 || q.CompactAnswers || q.Delegation || len(q.Answer)+len(q.Ns)+len(q.Extra) != 0 {
+		return false
+	}
+	// Transfers, transaction signatures, and other meta queries are never shared.
+	switch dns.RRToType(q.Question[0]) {
+	case dns.TypeNone, dns.TypeOPT, dns.TypeTKEY, dns.TypeTSIG, dns.TypeIXFR, dns.TypeAXFR, dns.TypeMAILB, dns.TypeMAILA:
 		return false
 	}
 	for _, rr := range q.Pseudo {
@@ -175,9 +180,31 @@ func positiveAnswer(q, m *dns.Msg) bool {
 	return false
 }
 
+// key identifies a question and the header flags that select a response policy.
+// The type is explicit because the DNS library formats meta-type questions
+// without it, and names compare case-insensitively (RFC 4343).
 func key(k *dns.Msg) string {
-	if k == nil || len(k.Question) == 0 {
+	if k == nil || len(k.Question) == 0 || k.Question[0] == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:do=%t:cd=%t:rd=%t:ad=%t", k.Question[0].String(), k.Security, k.CheckingDisabled, k.RecursionDesired, k.AuthenticatedData)
+	q := k.Question[0]
+	return fmt.Sprintf("%s:%d:%d:do=%t:cd=%t:rd=%t:ad=%t", asciiLower(q.Header().Name), q.Header().Class, dns.RRToType(q),
+		k.Security, k.CheckingDisabled, k.RecursionDesired, k.AuthenticatedData)
+}
+
+// asciiLower folds only ASCII letters. strings.ToLower would replace invalid
+// UTF-8 bytes in a name and could make distinct names collide.
+func asciiLower(s string) string {
+	for i := 0; i < len(s); i++ {
+		if 'A' <= s[i] && s[i] <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				if 'A' <= b[j] && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return s
 }

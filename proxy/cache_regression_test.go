@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
 	"codeberg.org/miekg/dns"
+	"codeberg.org/miekg/dns/dnstest"
 	"codeberg.org/miekg/dns/dnsutil"
 )
 
@@ -248,5 +251,91 @@ func TestCacheTransientFailurePreservesStale(t *testing.T) {
 	c.put(q, failure)
 	if got, hit := c.get(q); got == nil || hit {
 		t.Fatal("transient failure discarded the stale fallback")
+	}
+}
+
+func TestCacheKeySeparatesQuestionTypeAndClass(t *testing.T) {
+	seen := make(map[string]string)
+	check := func(desc string, q *dns.Msg) {
+		t.Helper()
+		k := key(q)
+		if prev, dup := seen[k]; dup {
+			t.Errorf("%s shares cache key %q with %s", desc, k, prev)
+		}
+		seen[k] = desc
+	}
+	// The DNS library formats these meta-type questions without their type.
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeANY, dns.TypeAXFR, dns.TypeIXFR, dns.TypeNXNAME, dns.TypeOPT} {
+		check(dns.TypeToString[qtype], dns.NewMsg("example.test.", qtype))
+	}
+	check("OPT other name", dns.NewMsg("other.test.", dns.TypeOPT))
+	chaos := dns.NewMsg("example.test.", dns.TypeA)
+	chaos.Question[0].Header().Class = dns.ClassCHAOS
+	check("CHAOS A", chaos)
+}
+
+func TestCacheMetaTypesDoNotShareAnswers(t *testing.T) {
+	c, _ := newCache(10, false)
+	anyQ := dns.NewMsg("example.test.", dns.TypeANY)
+	c.put(anyQ, cacheTestAnswer(t, anyQ, "example.test. 300 IN HINFO \"RFC8482\" \"\""))
+	if _, hit := c.get(anyQ); !hit {
+		t.Fatal("ANY answer was not cached")
+	}
+	if got, _ := c.get(dns.NewMsg("example.test.", dns.TypeNXNAME)); got != nil {
+		t.Fatalf("NXNAME question received the cached ANY answer: %v", got)
+	}
+}
+
+func TestCacheNameCaseInsensitive(t *testing.T) {
+	mixed := dns.NewMsg("ExAmPlE.TeSt.", dns.TypeA)
+	lower := dns.NewMsg("example.test.", dns.TypeA)
+	if key(mixed) != key(lower) {
+		t.Fatalf("case variants use different keys: %q and %q", key(mixed), key(lower))
+	}
+	s := runtimeServer("127.0.0.1:0")
+	s.cache.put(mixed, cacheTestAnswer(t, mixed, "ExAmPlE.TeSt. 300 IN A 192.0.2.1"))
+	w := dnstest.NewTestRecorder()
+	s.ServeDNS(context.Background(), w, lower)
+	if err := w.Msg.Unpack(); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Msg.Answer) != 1 {
+		t.Fatalf("lowercase query missed the mixed-case entry: %v", w.Msg)
+	}
+	if got := w.Msg.Question[0].Header().Name; got != "example.test." {
+		t.Errorf("response question = %q, want the client's spelling", got)
+	}
+}
+
+// wireQuery unpacks a query from wire format, as the server receives it; the
+// library cannot construct some meta-type questions directly.
+func wireQuery(t *testing.T, name string, qtype uint16) *dns.Msg {
+	t.Helper()
+	m := dns.NewMsg(name, dns.TypeA)
+	if err := m.Pack(); err != nil {
+		t.Fatal(err)
+	}
+	data := append([]byte(nil), m.Data...)
+	binary.BigEndian.PutUint16(data[12+len(name)+1:], qtype)
+	q := &dns.Msg{Data: data}
+	if err := q.Unpack(); err != nil {
+		t.Fatal(err)
+	}
+	if got := dns.RRToType(q.Question[0]); got != qtype {
+		t.Fatalf("question type = %d, want %d", got, qtype)
+	}
+	return q
+}
+
+func TestCacheableQueryRejectsMetaTypes(t *testing.T) {
+	for _, qtype := range []uint16{dns.TypeNone, dns.TypeOPT, dns.TypeTKEY, dns.TypeTSIG, dns.TypeIXFR, dns.TypeAXFR, dns.TypeMAILB, dns.TypeMAILA} {
+		if cacheableQuery(wireQuery(t, "example.test.", qtype)) {
+			t.Errorf("type %d is cacheable", qtype)
+		}
+	}
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeANY} {
+		if !cacheableQuery(wireQuery(t, "example.test.", qtype)) {
+			t.Errorf("type %d is no longer cacheable", qtype)
+		}
 	}
 }
