@@ -25,12 +25,11 @@ type cacheValue struct {
 	exp    time.Time
 }
 
+// newCache always returns a usable value: on error it caches nothing, so
+// methods called before Run reports the configuration error do not panic.
 func newCache(size int, evictMetrics bool) (*cache, error) {
 	c, err := specialized.NewCache(size, evictMetrics)
-	if err != nil {
-		return nil, err
-	}
-	return &cache{c: c, now: time.Now, maxStale: time.Hour}, nil
+	return &cache{c: c, now: time.Now, maxStale: time.Hour}, err
 }
 
 func (c *cache) get(mk *dns.Msg) (*dns.Msg, bool) {

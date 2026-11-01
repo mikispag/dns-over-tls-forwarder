@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -64,8 +65,11 @@ type Server struct {
 // A nil mux forwards every query; a supplied mux controls query routing.
 // A zero cacheSize selects the default capacity; a negative size disables caching.
 // Without upstreamServers, the Cloudflare and Google defaults are used.
-// Configuration errors are returned by Run.
-func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics bool, minTTL int, addr string, upstreamServers ...string) *Server {
+// Configuration errors are returned by Run. A nil logger discards output.
+func NewServer(mux *dns.ServeMux, logger *log.Logger, cacheSize int, evictMetrics bool, minTTL int, addr string, upstreamServers ...string) *Server {
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
 	switch {
 	case cacheSize == 0:
 		cacheSize = defaultCacheSize
@@ -89,7 +93,7 @@ func NewServer(mux *dns.ServeMux, log *log.Logger, cacheSize int, evictMetrics b
 		initErr:        err,
 		refreshPending: make(map[string]struct{}),
 		metrics:        newServerMetrics(),
-		Log:            log,
+		Log:            logger,
 	}
 	if mux == nil {
 		for _, listener := range s.servers {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
@@ -342,6 +343,21 @@ func TestDebugHandler(t *testing.T) {
 				t.Errorf("newServer(%v,%v).DebugHandler(): %d requests, got\n%+v\nwant\n%+v", tt.size, tt.evictMetrics, tt.reqs, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfigurationErrorsReportedByRun(t *testing.T) {
+	s := NewServer(nil, nil, 1, false, 0, "127.0.0.1:0", "127.0.0.1:853")
+	s.SetMaxStale(time.Minute)
+	for _, h := range []http.Handler{s.DebugHandler(), s.PrometheusHandler()} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		if w.Code != 200 {
+			t.Errorf("HTTP status %d", w.Code)
+		}
+	}
+	if err := s.Run(context.Background()); err == nil {
+		t.Fatal("Run accepted an unsupported cache size")
 	}
 }
 
