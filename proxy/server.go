@@ -31,7 +31,8 @@ const (
 	// lookupAttempts bounds rounds in which no upstream responds. A resolver
 	// that timed out on a slow name usually has it cached by the next round.
 	lookupAttempts = 3
-	// ednsPayloadSize is the advertised EDNS UDP payload size (DNS Flag Day 2020).
+	// ednsPayloadSize is the advertised EDNS UDP payload size and the largest
+	// UDP reply (DNS Flag Day 2020).
 	ednsPayloadSize = 1232
 )
 
@@ -310,9 +311,9 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 		m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
 		m.AuthenticatedData = m.AuthenticatedData && (q.AuthenticatedData || q.Security)
 		if q.UDPSize > 0 || q.Security || len(q.Pseudo) > 0 {
-			// The DNS library writes a zero payload size for 512 or less;
-			// packResponse still truncates to the client's own limit.
-			m.UDPSize, m.Security = max(q.UDPSize, ednsPayloadSize), q.Security
+			// Advertise our own payload size; packResponse truncates to the
+			// smaller of it and the client's.
+			m.UDPSize, m.Security = ednsPayloadSize, q.Security
 		} else {
 			// A response carries OPT only when the query did (RFC 6891).
 			m.UDPSize, m.Security, m.CompactAnswers, m.Delegation, m.Z = 0, false, false, false, 0
@@ -343,7 +344,10 @@ func packResponse(m, q *dns.Msg, network string) error {
 	if err := m.Pack(); err != nil {
 		return err
 	}
-	if network != "udp" || len(m.Data) <= max(dns.MinMsgSize, int(q.UDPSize)) {
+	// Cap UDP replies at the flag-day size whatever the client advertises:
+	// this avoids IP fragmentation and limits amplification.
+	limit := max(dns.MinMsgSize, min(int(q.UDPSize), ednsPayloadSize))
+	if network != "udp" || len(m.Data) <= limit {
 		return nil
 	}
 	// Return a complete question with TC rather than split an RRset across packets.
@@ -353,7 +357,7 @@ func packResponse(m, q *dns.Msg, network string) error {
 	if err := m.Pack(); err != nil {
 		return err
 	}
-	if len(m.Data) > max(dns.MinMsgSize, int(q.UDPSize)) {
+	if len(m.Data) > limit {
 		m.Pseudo = nil
 		return m.Pack()
 	}

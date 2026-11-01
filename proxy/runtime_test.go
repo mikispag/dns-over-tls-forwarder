@@ -123,7 +123,7 @@ func answerWith(rcode uint16, records ...string) func(q *dns.Msg) *dns.Msg {
 func TestUDPResponseLimit(t *testing.T) {
 	s := runtimeServer("127.0.0.1:0")
 	q := cacheRuntimeAnswer(s, "large.test.", 100)
-	for _, size := range []uint16{0, 512, 1232} {
+	for _, size := range []uint16{0, 512, 1232, 4096, 65535} {
 		q.UDPSize = size
 		if err := q.Pack(); err != nil {
 			t.Fatal(err)
@@ -133,8 +133,12 @@ func TestUDPResponseLimit(t *testing.T) {
 		if err := w.Msg.Unpack(); err != nil {
 			t.Fatal(err)
 		}
-		if len(w.Msg.Data) > max(512, int(size)) || !w.Msg.Truncated {
+		// Replies never exceed 1232 bytes, whatever the client advertises.
+		if len(w.Msg.Data) > max(512, min(int(size), 1232)) || !w.Msg.Truncated {
 			t.Errorf("UDPSize=%d: wire length=%d, TC=%v", size, len(w.Msg.Data), w.Msg.Truncated)
+		}
+		if size > 0 && w.Msg.UDPSize != 1232 {
+			t.Errorf("UDPSize=%d: advertised %d, want 1232", size, w.Msg.UDPSize)
 		}
 	}
 }

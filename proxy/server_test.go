@@ -494,8 +494,8 @@ func TestEDNSPropagation(t *testing.T) {
 		t.Fatalf("Got Rcode %d, want SERVFAIL", r.Rcode)
 	}
 
-	if r.UDPSize != 1234 {
-		t.Errorf("UDPSize mismatch in SERVFAIL response: got %d, want 1234", r.UDPSize)
+	if r.UDPSize != ednsPayloadSize {
+		t.Errorf("SERVFAIL response advertises UDPSize %d, want %d", r.UDPSize, ednsPayloadSize)
 	}
 	if !r.Security {
 		t.Errorf("Security/DO bit not propagated in SERVFAIL response")
