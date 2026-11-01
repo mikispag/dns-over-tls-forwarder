@@ -554,8 +554,10 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 		return nil
 	}
 	// Upstream padding (RFC 7830) and other per-hop options must not be
-	// cached or forwarded over plain DNS.
+	// cached or forwarded over plain DNS. The upstream wire form is stale
+	// from here on; dropping it also saves copying it into each clone.
 	m.Pseudo = slices.DeleteFunc(m.Pseudo, strippedOption)
+	m.Data = nil
 	for _, a := range m.Answer {
 		a.Header().TTL = max(a.Header().TTL, uint32(s.minTTL))
 	}

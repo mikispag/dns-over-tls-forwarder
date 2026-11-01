@@ -268,6 +268,27 @@ func TestTransportOptionsDoNotBypassCache(t *testing.T) {
 	}
 }
 
+func TestGetAnswerHasNoStaleWireData(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	reply := answerWith(dns.RcodeSuccess, "wire.test. 300 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		m := reply(q)
+		m.Pseudo = []dns.RR{&dns.PADDING{Padding: strings.Repeat("00", 100)}}
+		return m
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	m := s.GetAnswer(context.Background(), dns.NewMsg("wire.test.", dns.TypeA))
+	if m == nil {
+		t.Fatal("no answer")
+	}
+	// Msg.WriteTo sends existing Data without repacking; upstream bytes
+	// would carry the leader's ID and the stripped padding.
+	if len(m.Data) != 0 {
+		t.Errorf("answer carries %d bytes of upstream wire data", len(m.Data))
+	}
+}
+
 func TestQueryPaddingBlockSize(t *testing.T) {
 	for _, q := range []*dns.Msg{
 		dns.NewMsg("example.org.", dns.TypeA),
