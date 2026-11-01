@@ -130,14 +130,18 @@ func validateListenAddress(addr, goos string) error {
 
 func (s *Server) connector(upstreamServer string) connector {
 	upstream, err := parseUpstream(upstreamServer)
+	// Resolvers close idle connections; a shared session cache lets
+	// reconnects resume TLS 1.3 sessions instead of verifying certificates again.
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		ServerName:         upstream.serverName,
+		ClientSessionCache: tls.NewLRUClientSessionCache(connectionsPerUpstream),
+	}
 	return func(ctx context.Context) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return s.dial(ctx, upstream.address, &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			ServerName: upstream.serverName,
-		})
+		return s.dial(ctx, upstream.address, cfg)
 	}
 }
 
