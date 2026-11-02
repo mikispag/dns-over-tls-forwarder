@@ -10,14 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gologme/log"
-	"github.com/mikispag/dns-over-tls-forwarder/proxy"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/proxy"
 )
 
 const (
@@ -78,7 +77,7 @@ func run(ctx context.Context) error {
 		logger.EnableLevel("debug")
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		logger.Infof("%s %s", path.Base(bi.Path), bi.Main.Version)
+		logger.Infof("dns-over-tls-forwarder %s", bi.Main.Version)
 	}
 
 	server := proxy.NewServer(nil, logger, 0, *evictMetrics, *minTTL, *addr, upstreams...)

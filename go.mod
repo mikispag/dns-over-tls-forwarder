@@ -1,4 +1,4 @@
-module github.com/mikispag/dns-over-tls-forwarder
+module github.com/mikispag/dns-over-tls-forwarder/v2
 
 go 1.27.0
 

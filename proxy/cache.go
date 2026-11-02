@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"codeberg.org/miekg/dns"
-	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/proxy/internal/specialized"
 )
 
 const (

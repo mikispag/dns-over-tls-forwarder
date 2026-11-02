@@ -22,7 +22,7 @@ import (
 	"codeberg.org/miekg/dns"
 	"codeberg.org/miekg/dns/dnstest"
 	"codeberg.org/miekg/dns/dnsutil"
-	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/proxy/internal/specialized"
 )
 
 type fakeServer func(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)

@@ -18,7 +18,7 @@ import (
 	"codeberg.org/miekg/dns"
 	"codeberg.org/miekg/dns/dnsutil"
 	"github.com/gologme/log"
-	"github.com/mikispag/dns-over-tls-forwarder/proxy/internal/specialized"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/proxy/internal/specialized"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )

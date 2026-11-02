@@ -1,7 +1,7 @@
 # dns-over-tls-forwarder
 
 [![CI](https://github.com/mikispag/dns-over-tls-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/mikispag/dns-over-tls-forwarder/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/mikispag/dns-over-tls-forwarder.svg)](https://pkg.go.dev/github.com/mikispag/dns-over-tls-forwarder)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mikispag/dns-over-tls-forwarder/v2.svg)](https://pkg.go.dev/github.com/mikispag/dns-over-tls-forwarder/v2)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/mikispag/dns-over-tls-forwarder)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -36,7 +36,7 @@ curl http://localhost:9100/metrics
 
 Both queries should return an answer, and repeating one increases `dns_cache_hits_total`. Your system resolver is untouched; to use the forwarder for all lookups, bind it to port 53 ([Running with systemd](#running-with-systemd)) and point your operating system or router at it.
 
-To install the binary instead: `go install github.com/mikispag/dns-over-tls-forwarder@latest`.
+To install the binary instead: `go install github.com/mikispag/dns-over-tls-forwarder/v2@latest`.
 
 ## How it works
 
