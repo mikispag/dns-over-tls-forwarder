@@ -17,7 +17,20 @@ Applications ── ordinary DNS over UDP/TCP ──► dns-over-tls-forwarder
 
 ## Install
 
-Each [release](https://github.com/mikispag/dns-over-tls-forwarder/releases) provides static Linux binaries for amd64 and arm64, a `SHA256SUMS` file, and GitHub build provenance. To download and verify the amd64 archive:
+Each [release](https://github.com/mikispag/dns-over-tls-forwarder/releases) provides static Linux binaries, a `SHA256SUMS` file, and GitHub build provenance. Pick the archive for your hardware:
+
+| Archive | Typical hardware |
+| --- | --- |
+| `linux_amd64` | x86-64 PCs, servers, and mini PCs |
+| `linux_arm64` | Raspberry Pi 3 and later on a 64-bit OS; routers with MediaTek Filogic or Qualcomm IPQ807x |
+| `linux_armv7` | 32-bit ARM routers such as Qualcomm IPQ40xx, Broadcom BCM4708/4709, and Marvell Armada; Raspberry Pi 2 and later on a 32-bit OS |
+| `linux_armv6` | Raspberry Pi Zero and 1 |
+| `linux_armv5` | Older ARM devices without an FPU, such as Marvell Kirkwood |
+| `linux_mipsle_softfloat` | MediaTek MT7621 and MT76x8 routers, such as the Ubiquiti EdgeRouter X |
+| `linux_mips_softfloat` | Qualcomm Atheros routers (OpenWrt `ath79`) |
+| `linux_mips64_softfloat` | Cavium Octeon routers, such as the Ubiquiti EdgeRouter Lite, 4, and 6P |
+
+`uname -m` shows the CPU family; on OpenWrt, the package architecture also shows MIPS byte order (`mipsel_*` is little-endian). To download and verify the amd64 archive:
 
 ```sh
 gh release download --repo mikispag/dns-over-tls-forwarder --pattern '*linux_amd64.tar.gz' --pattern SHA256SUMS
