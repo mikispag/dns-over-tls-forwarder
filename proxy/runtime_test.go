@@ -121,6 +121,72 @@ func answerWith(rcode uint16, records ...string) func(q *dns.Msg) *dns.Msg {
 	}
 }
 
+// runServer starts s on its configured address and returns the UDP address
+// once it is listening. Cleanup stops s and checks how Run exited.
+func runServer(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			checkRunExit(t, err)
+		case <-time.After(5 * time.Second):
+			t.Error("Run did not stop")
+		}
+	})
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		s.mu.RLock()
+		addr, started := s.servers[1].Addr, !s.startTime.IsZero()
+		s.mu.RUnlock()
+		if started {
+			return addr
+		}
+	}
+	t.Fatal("server did not start")
+	return ""
+}
+
+func TestQueryAcceptancePolicy(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess)}
+	s.dial = u.dial
+	addr := runServer(t, s)
+	c := dns.NewClient()
+	exchange := func(m *dns.Msg) *dns.Msg {
+		t.Helper()
+		r, _, err := c.Exchange(context.Background(), m, "udp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// The DNS library's default policy refuses RRSIG queries outright.
+	if r := exchange(dns.NewMsg("signed.test.", dns.TypeRRSIG)); r.Rcode != dns.RcodeSuccess || u.dials.Load() != 1 {
+		t.Errorf("RRSIG query: rcode %s, upstream dials %d; want it forwarded", dns.RcodeToString[r.Rcode], u.dials.Load())
+	}
+	empty := new(dns.Msg)
+	empty.ID = dns.ID()
+	if r := exchange(empty); r.Rcode != dns.RcodeFormatError {
+		t.Errorf("empty question: rcode %s, want FORMERR", dns.RcodeToString[r.Rcode])
+	}
+	if got := s.metrics.QueriesFormErr.Load(); got != 1 {
+		t.Errorf("FORMERR responses counted = %d, want 1", got)
+	}
+	for _, opcode := range []uint8{dns.OpcodeNotify, dns.OpcodeUpdate, dns.OpcodeStatus, dns.OpcodeIQuery} {
+		m := dns.NewMsg("zone.test.", dns.TypeSOA)
+		m.Opcode = opcode
+		if r := exchange(m); r.Rcode != dns.RcodeNotImplemented {
+			t.Errorf("opcode %s: rcode %s, want NOTIMP", dns.OpcodeToString[opcode], dns.RcodeToString[r.Rcode])
+		}
+	}
+	if got := u.dials.Load(); got != 1 {
+		t.Errorf("upstream dials = %d: unsupported or malformed requests were forwarded", got)
+	}
+}
+
 func TestUDPResponseLimit(t *testing.T) {
 	s := runtimeServer("127.0.0.1:0")
 	q := cacheRuntimeAnswer(s, "large.test.", 100)

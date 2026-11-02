@@ -108,6 +108,7 @@ func NewServer(mux *dns.ServeMux, logger *log.Logger, cacheSize int, evictMetric
 	if mux == nil {
 		for _, listener := range s.servers {
 			listener.Handler = s
+			listener.MsgAcceptFunc = acceptRequest
 		}
 	}
 	if len(upstreamServers) == 0 {
@@ -136,6 +137,17 @@ func validateListenAddress(addr, goos string) error {
 		return errors.New("wildcard listening is unsupported on Windows; bind to an explicit local IP address")
 	}
 	return nil
+}
+
+// acceptRequest passes every request to ServeDNS, which answers malformed and
+// unsupported ones itself and counts them. The DNS library's default policy
+// refuses RRSIG queries, which a forwarder must pass on, and answers some
+// errors before the handler sees them. Responses are dropped to avoid loops.
+func acceptRequest(m *dns.Msg) dns.MsgAcceptAction {
+	if m.Response {
+		return dns.MsgIgnore
+	}
+	return dns.MsgAccept
 }
 
 func (s *Server) connector(upstreamServer string) connector {
@@ -303,6 +315,12 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	if malformed {
 		m = &dns.Msg{}
 		m.ID, m.Response, m.Rcode = q.ID, true, dns.RcodeFormatError
+	} else if q.Opcode != dns.OpcodeQuery {
+		// Only standard queries are resolved; NOTIFY, UPDATE, and other
+		// opcodes would only fail upstream.
+		m = new(dns.Msg)
+		dnsutil.SetReply(m, q)
+		m.Rcode = dns.RcodeNotImplemented
 	} else {
 		if s.Log.GetLevel("debug") {
 			s.Log.Debugf("Question from %v: %s", w.RemoteAddr(), q.String())
@@ -421,7 +439,7 @@ func (s *Server) DebugHandler() http.Handler {
 // GetAnswer resolves q from the cache or the upstreams. A non-nil result
 // carries q's ID and question spelling; nil means resolution failed.
 func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
-	if q == nil || len(q.Question) != 1 || q.Question[0] == nil {
+	if q == nil || q.Response || len(q.Question) != 1 || q.Question[0] == nil {
 		return nil
 	}
 	m, ok := s.cache.get(q)

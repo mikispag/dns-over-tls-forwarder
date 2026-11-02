@@ -143,7 +143,7 @@ func (c *cache) put(k *dns.Msg, v *dns.Msg) {
 
 // Only options normalized before forwarding can safely share cached responses.
 func cacheableQuery(q *dns.Msg) bool {
-	if q == nil || len(q.Question) != 1 || q.Question[0] == nil || q.Opcode != dns.OpcodeQuery || q.Version != 0 || q.CompactAnswers || q.Delegation || len(q.Answer)+len(q.Ns)+len(q.Extra) != 0 {
+	if q == nil || q.Response || len(q.Question) != 1 || q.Question[0] == nil || q.Opcode != dns.OpcodeQuery || q.Version != 0 || q.CompactAnswers || q.Delegation || len(q.Answer)+len(q.Ns)+len(q.Extra) != 0 {
 		return false
 	}
 	// Transfers, transaction signatures, and other meta queries are never shared.
