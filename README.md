@@ -41,10 +41,10 @@ To install the binary instead: `go install github.com/mikispag/dns-over-tls-forw
 ## How it works
 
 - **Authenticated upstreams.** Connections require TLS 1.3 and verify the resolver's certificate against its hostname using the system trust store. Reconnects resume TLS sessions.
-- **Racing.** Each cache miss goes to every upstream. The first `NOERROR` or `NXDOMAIN` wins; other responses are used only if neither arrives. This is a race, not failover or consensus.
+- **Racing.** Each cache miss goes to every upstream. The first `NOERROR` or `NXDOMAIN` wins; other responses are used only if neither arrives. This is a race, not failover or consensus. Only standard queries are forwarded: `NOTIFY`, `UPDATE`, and other opcodes get `NOTIMP`.
 - **Connection reuse.** Each upstream keeps up to two TLS connections. Slower upstreams finish their exchanges in the background, so their connections stay warm, and a connection the resolver closed while idle is retried transparently. Identical concurrent queries share one lookup, with a 10-second deadline.
 - **Caching.** 65,536 entries, split between least-recently-used and most-frequently-accessed stores. Positive answers and SOA-bearing negative answers are cached; responses over 4 KiB are served but not cached. Expired answers can be served briefly while a refresh runs.
-- **Privacy and EDNS.** Outbound queries drop client subnet (ECS) and other per-hop options such as cookies, and are padded to 128-byte blocks. Upstream padding never reaches clients or the cache, and clients receive EDNS only if they sent it. Cache keys ignore name case and separate the `DO`, `CD`, `RD`, and `AD` flags; queries with other EDNS options bypass the cache.
+- **Privacy and EDNS.** Outbound queries get a fresh transaction ID, drop client subnet (ECS) and other per-hop options such as cookies, and are padded to 128-byte blocks. Upstream padding never reaches clients or the cache, and clients receive EDNS only if they sent it. Cache keys ignore name case and separate the `DO`, `CD`, `RD`, and `AD` flags; queries with other EDNS options bypass the cache.
 - **UDP sizing.** UDP replies are capped at the client's limit or 1232 bytes, whichever is smaller. Larger answers set `TC`, and the client retries over TCP.
 
 The forwarder does not validate DNSSEC itself. The hop from clients is plain DNS, and each upstream sees the queries sent to it: TLS hides queries from the network, not from the resolver.
