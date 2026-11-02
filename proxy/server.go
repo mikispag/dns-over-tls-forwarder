@@ -318,33 +318,13 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	} else if q.Opcode != dns.OpcodeQuery {
 		// Only standard queries are resolved; NOTIFY, UPDATE, and other
 		// opcodes would only fail upstream.
-		m = new(dns.Msg)
-		dnsutil.SetReply(m, q)
-		m.Rcode = dns.RcodeNotImplemented
+		m = errorReply(q, dns.RcodeNotImplemented)
 	} else {
 		if s.Log.GetLevel("debug") {
 			s.Log.Debugf("Question from %v: %s", w.RemoteAddr(), q.String())
 		}
-		m = s.GetAnswer(ctx, q)
-		if m == nil {
-			m = new(dns.Msg)
-			dnsutil.SetReply(m, q)
-			m.Rcode = dns.RcodeServerFailure
-		}
-		// Cached/shared results must reflect this client's header flags.
-		m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
-		m.AuthenticatedData = m.AuthenticatedData && (q.AuthenticatedData || q.Security)
-		if q.UDPSize > 0 || q.Security || len(q.Pseudo) > 0 {
-			// Advertise our own payload size; packResponse truncates to the
-			// smaller of it and the client's.
-			m.UDPSize, m.Security = ednsPayloadSize, q.Security
-		} else {
-			// A response carries OPT only when the query did (RFC 6891).
-			m.UDPSize, m.Security, m.CompactAnswers, m.Delegation, m.Z = 0, false, false, false, 0
-			m.Pseudo = slices.DeleteFunc(m.Pseudo, func(rr dns.RR) bool {
-				_, ok := rr.(dns.EDNS0)
-				return ok
-			})
+		if m = s.GetAnswer(ctx, q); m == nil {
+			m = errorReply(q, dns.RcodeServerFailure)
 		}
 	}
 	if err := packResponse(m, q, network); err != nil {
@@ -362,6 +342,35 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	if _, err := m.WriteTo(w); err != nil {
 		s.Log.Warnf("Write DNS response failed: %v", err)
 	}
+}
+
+// errorReply builds a response to q with the given rcode, tailored to q.
+func errorReply(q *dns.Msg, rcode uint16) *dns.Msg {
+	m := new(dns.Msg)
+	dnsutil.SetReply(m, q)
+	m.Rcode = rcode
+	tailorResponse(m, q)
+	return m
+}
+
+// tailorResponse adapts a response, possibly cached or shared with other
+// clients, to q: its ID, question spelling, header flags, and EDNS.
+func tailorResponse(m, q *dns.Msg) {
+	m.ID, m.Question = q.ID, []dns.RR{q.Question[0].Clone()}
+	m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
+	m.AuthenticatedData = m.AuthenticatedData && (q.AuthenticatedData || q.Security)
+	if q.UDPSize > 0 || q.Security || len(q.Pseudo) > 0 {
+		// Advertise our own payload size; packResponse truncates UDP replies
+		// to the smaller of it and the client's.
+		m.UDPSize, m.Security = ednsPayloadSize, q.Security
+		return
+	}
+	// A response carries OPT only when the query did (RFC 6891).
+	m.UDPSize, m.Security, m.CompactAnswers, m.Delegation, m.Z = 0, false, false, false, 0
+	m.Pseudo = slices.DeleteFunc(m.Pseudo, func(rr dns.RR) bool {
+		_, ok := rr.(dns.EDNS0)
+		return ok
+	})
 }
 
 func packResponse(m, q *dns.Msg, network string) error {
@@ -436,8 +445,9 @@ func (s *Server) DebugHandler() http.Handler {
 	})
 }
 
-// GetAnswer resolves q from the cache or the upstreams. A non-nil result
-// carries q's ID and question spelling; nil means resolution failed.
+// GetAnswer resolves q from the cache or the upstreams. A non-nil result is
+// tailored to q: its ID, question spelling, header flags, and EDNS. Nil means
+// resolution failed.
 func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
 	if q == nil || q.Response || len(q.Question) != 1 || q.Question[0] == nil {
 		return nil
@@ -456,7 +466,7 @@ func (s *Server) GetAnswer(ctx context.Context, q *dns.Msg) *dns.Msg {
 	}
 	if m != nil {
 		// Cached and shared results may come from another client's query.
-		m.ID, m.Question = q.ID, []dns.RR{q.Question[0].Clone()}
+		tailorResponse(m, q)
 	}
 	return m
 }

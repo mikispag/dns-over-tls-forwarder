@@ -697,6 +697,31 @@ func TestGetAnswerReturnsCallerIdentity(t *testing.T) {
 	check("cache hit", s.GetAnswer(context.Background(), hitQ), hitQ)
 }
 
+func TestGetAnswerTailorsFlagsAndEDNS(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	reply := answerWith(dns.RcodeSuccess, "tailor.test. 300 IN A 192.0.2.1")
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		m := reply(q)
+		m.AuthenticatedData, m.RecursionDesired = true, true
+		m.Pseudo = []dns.RR{&dns.EDE{InfoCode: dns.ExtendedErrorOther}}
+		return m
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	q := dns.NewMsg("tailor.test.", dns.TypeA)
+	q.RecursionDesired = false
+	m := s.GetAnswer(context.Background(), q)
+	if m == nil {
+		t.Fatal("no answer")
+	}
+	if m.AuthenticatedData || m.RecursionDesired {
+		t.Errorf("AD=%v RD=%v, want the flags a non-DNSSEC client without RD expects", m.AuthenticatedData, m.RecursionDesired)
+	}
+	if m.UDPSize != 0 || len(m.Pseudo) != 0 {
+		t.Errorf("non-EDNS caller received EDNS: UDPSize %d, options %v", m.UDPSize, m.Pseudo)
+	}
+}
+
 func TestPendingLookupsBounded(t *testing.T) {
 	s := runtimeServer("127.0.0.1:0")
 	u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess, "busy.test. 300 IN A 192.0.2.1")}
