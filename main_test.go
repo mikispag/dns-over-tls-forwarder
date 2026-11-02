@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikispag/dns-over-tls-forwarder/v2/internal/testnet"
 )
 
 var testBinary string
@@ -108,7 +110,8 @@ func TestCLILoggingAndDiagnostics(t *testing.T) {
 			}
 			defer func() { _ = stdout.Close() }()
 			logPath := filepath.Join(dir, "forwarder.log")
-			dnsPort, metricsPort, upstreamPort := freeTCPPort(t), freeTCPPort(t), freeTCPPort(t)
+			_, dnsPort, _ := net.SplitHostPort(testnet.DNSAddr(t))
+			metricsPort, upstreamPort := freeTCPPort(t), freeTCPPort(t)
 			args := []string{"-a", "127.0.0.1:" + dnsPort, "-metrics", metricsPort,
 				"-l", logPath, "-s", "dns.test:" + upstreamPort + "@127.0.0.1"}
 			if debug {

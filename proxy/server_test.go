@@ -22,6 +22,7 @@ import (
 	"codeberg.org/miekg/dns"
 	"codeberg.org/miekg/dns/dnstest"
 	"codeberg.org/miekg/dns/dnsutil"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/internal/testnet"
 	"github.com/mikispag/dns-over-tls-forwarder/v2/proxy/internal/specialized"
 )
 
@@ -103,7 +104,7 @@ func setupTestServer(tb testing.TB, cacheSize int, responder func(q string) stri
 	ts = &testServer{
 		tb:       tb,
 		question: "raccoon.miki.",
-		laddr:    "127.0.0.1:0",
+		laddr:    testnet.DNSAddr(tb),
 	}
 
 	// Setup fake remote
@@ -396,7 +397,7 @@ func TestEDE(t *testing.T) {
 	// Setup Proxy Server
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, testnet.DNSAddr(t), raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
@@ -458,7 +459,7 @@ func TestEDNSPropagation(t *testing.T) {
 	// Setup Proxy Server with NO upstreams to force SERVFAIL
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", "127.0.0.1:1") // invalid upstream to force SERVFAIL
+	s := NewServer(nil, logger, 0, false, 60, testnet.DNSAddr(t), "127.0.0.1:1") // invalid upstream to force SERVFAIL
 	go func() { _ = s.Run(ctx) }()
 	defer cancel()
 
@@ -568,7 +569,7 @@ func TestConcurrencyRace(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", u1.a, u2.a)
+	s := NewServer(nil, logger, 0, false, 60, testnet.DNSAddr(t), u1.a, u2.a)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", addr)
 	}
@@ -713,7 +714,7 @@ func TestNegativeCaching(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 100, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 100, false, 60, testnet.DNSAddr(t), raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
@@ -796,7 +797,7 @@ func TestSingleflightDeduplication(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, testnet.DNSAddr(t), raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}
@@ -878,7 +879,7 @@ func TestPrivacyPaddingAndECS(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := log.New(os.Stdout, "", log.Flags())
-	s := NewServer(nil, logger, 0, false, 60, "127.0.0.1:0", raddr)
+	s := NewServer(nil, logger, 0, false, 60, testnet.DNSAddr(t), raddr)
 	s.dial = func(_ context.Context, addr string, _ *tls.Config) (net.Conn, error) {
 		return net.Dial("tcp", realRAddr)
 	}

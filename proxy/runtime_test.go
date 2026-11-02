@@ -20,6 +20,7 @@ import (
 	"codeberg.org/miekg/dns/dnstest"
 	"codeberg.org/miekg/dns/dnsutil"
 	"github.com/gologme/log"
+	"github.com/mikispag/dns-over-tls-forwarder/v2/internal/testnet"
 )
 
 func runtimeServer(addr string) *Server {
@@ -132,25 +133,45 @@ func runServer(t *testing.T, s *Server) string {
 		cancel()
 		select {
 		case err := <-done:
-			checkRunExit(t, err)
+			if !s.startTime.IsZero() {
+				checkRunExit(t, err)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("Run did not stop")
 		}
 	})
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+	waitRunning(t, s, done)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.servers[1].Addr
+}
+
+// waitRunning waits until s serves queries. It fails the test as soon as Run
+// returns or after a deadline, so a startup failure cannot hang the test.
+// An early Run result is put back on runDone for cleanup code.
+func waitRunning(t *testing.T, s *Server, runDone chan error) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
 		s.mu.RLock()
-		addr, started := s.servers[1].Addr, !s.startTime.IsZero()
+		started := !s.startTime.IsZero()
 		s.mu.RUnlock()
 		if started {
-			return addr
+			return
+		}
+		select {
+		case err := <-runDone:
+			runDone <- err
+			t.Fatalf("Run returned before serving: %v", err)
+		case <-deadline:
+			t.Fatal("server did not start")
+		case <-time.After(time.Millisecond):
 		}
 	}
-	t.Fatal("server did not start")
-	return ""
 }
 
 func TestQueryAcceptancePolicy(t *testing.T) {
-	s := runtimeServer("127.0.0.1:0")
+	s := runtimeServer(testnet.DNSAddr(t))
 	u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess)}
 	s.dial = u.dial
 	addr := runServer(t, s)
@@ -784,7 +805,7 @@ func TestShutdownCancelsTLSHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	s := runtimeServer("127.0.0.1:0")
+	s := runtimeServer(testnet.DNSAddr(t))
 	s.pools = []*pool{newPoolWithAddr(1, listener.Addr().String(), s.connector(listener.Addr().String()))}
 	accepted := make(chan net.Conn, 1)
 	go func() { c, _ := listener.Accept(); accepted <- c }()
@@ -792,16 +813,7 @@ func TestShutdownCancelsTLSHandshake(t *testing.T) {
 	defer cancel()
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(ctx) }()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.RLock()
-		started := !s.startTime.IsZero()
-		s.mu.RUnlock()
-		if started {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitRunning(t, s, runDone)
 	answer := make(chan *dns.Msg, 1)
 	go func() { answer <- s.GetAnswer(context.Background(), dns.NewMsg("blocked.test.", dns.TypeA)) }()
 	var peer net.Conn
@@ -920,7 +932,7 @@ func BenchmarkServeDNSCacheHit(b *testing.B) {
 }
 
 func TestShutdownWaitsForCanceledLookupWorkers(t *testing.T) {
-	s := runtimeServer("127.0.0.1:0")
+	s := runtimeServer(testnet.DNSAddr(t))
 	dialStarted := make(chan struct{})
 	dialCanceled := make(chan struct{})
 	finishDial := make(chan struct{})
@@ -935,16 +947,7 @@ func TestShutdownWaitsForCanceledLookupWorkers(t *testing.T) {
 	defer cancel()
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(ctx) }()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.RLock()
-		started := !s.startTime.IsZero()
-		s.mu.RUnlock()
-		if started {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitRunning(t, s, runDone)
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
 	callerDone := make(chan struct{})
 	go func() { s.GetAnswer(callerCtx, dns.NewMsg("shutdown-wait.test.", dns.TypeA)); close(callerDone) }()
@@ -1080,23 +1083,15 @@ func TestRaceKeepsLosingUpstreamConnection(t *testing.T) {
 }
 
 func TestShutdownClosesIdleTCPClients(t *testing.T) {
-	s := runtimeServer("127.0.0.1:0")
+	s := runtimeServer(testnet.DNSAddr(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(ctx) }()
-	var addr string
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.RLock()
-		started := !s.startTime.IsZero()
-		addr = s.servers[0].Addr
-		s.mu.RUnlock()
-		if started {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitRunning(t, s, runDone)
+	s.mu.RLock()
+	addr := s.servers[0].Addr
+	s.mu.RUnlock()
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -1124,28 +1119,15 @@ func TestShutdownClosesIdleTCPClients(t *testing.T) {
 }
 
 func TestUnexpectedTCPListenerFailureIsReturned(t *testing.T) {
-	s := runtimeServer("127.0.0.1:0")
+	s := runtimeServer(testnet.DNSAddr(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
-	var listener net.Listener
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.RLock()
-		started := !s.startTime.IsZero()
-		if started {
-			listener = s.servers[0].Listener
-		}
-		s.mu.RUnlock()
-		if started {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if listener == nil {
-		t.Fatal("server did not start")
-	}
+	waitRunning(t, s, done)
+	s.mu.RLock()
+	listener := s.servers[0].Listener
+	s.mu.RUnlock()
 	underlying := listener.(*trackedListener).Listener
 	if err := underlying.Close(); err != nil {
 		t.Fatal(err)
