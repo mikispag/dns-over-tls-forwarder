@@ -17,11 +17,29 @@ concurrency:
 
 jobs:
   build:
-    name: Build (linux/${{ matrix.goarch }})
+    name: Build (linux/${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goarch: [amd64, arm64]
+        # Servers, single-board computers, and common router SoCs. MIPS builds
+        # use soft float: many router SoCs lack an FPU, and router kernels
+        # often omit FPU emulation.
+        include:
+          - { arch: amd64, goarch: amd64 }
+          - { arch: arm64, goarch: arm64 }
+          - { arch: armv7, goarch: arm, goarm: '7' }
+          - { arch: armv6, goarch: arm, goarm: '6' }
+          - { arch: armv5, goarch: arm, goarm: '5' }
+          - { arch: mips_softfloat, goarch: mips, gomips: softfloat }
+          - { arch: mipsle_softfloat, goarch: mipsle, gomips: softfloat }
+          - { arch: mips64_softfloat, goarch: mips64, gomips64: softfloat }
+    env:
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      GOMIPS: ${{ matrix.gomips }}
+      GOMIPS64: ${{ matrix.gomips64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,15 +52,15 @@ jobs:
           # Release builds do not trust caches written by other workflows.
           cache: false
 
+      - name: Install QEMU for emulated tests
+        if: matrix.goarch != 'amd64'
+        run: sudo apt-get update -q && sudo apt-get install -yq qemu-user-static
+
+      # Other targets run under QEMU, covering 32-bit and big-endian platforms.
       - name: Test
-        if: matrix.goarch == 'amd64'
         run: go vet ./... && go test ./...
 
       - name: Build static binary
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -ldflags='-s -w' -o dist/dns-over-tls-forwarder .
 
       - name: Check embedded version
@@ -56,14 +74,14 @@ jobs:
 
       - name: Package
         env:
-          GOARCH: ${{ matrix.goarch }}
+          ARCH: ${{ matrix.arch }}
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             version=${GITHUB_REF_NAME#v}
           else
             version=0.0.0-snapshot.${GITHUB_SHA::12}
           fi
-          name=dns-over-tls-forwarder_${version}_linux_${GOARCH}
+          name=dns-over-tls-forwarder_${version}_linux_${ARCH}
           mkdir "dist/$name"
           mv dist/dns-over-tls-forwarder "dist/$name/"
           cp LICENSE README.md debian/dns-over-tls-forwarder.service "dist/$name/"
@@ -76,7 +94,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux-${{ matrix.goarch }}
+          name: linux-${{ matrix.arch }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
