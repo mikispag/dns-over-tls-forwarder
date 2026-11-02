@@ -602,7 +602,8 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 
 func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 	qc := CloneMsg(q)
-	qc.Data = nil
+	// Like per-hop options, the client's chosen ID stays on the client's hop.
+	qc.ID, qc.Data = dns.ID(), nil
 	// Include the OPT record and option header before calculating the block size.
 	padding := &dns.PADDING{}
 	qc.Pseudo = append(slices.DeleteFunc(qc.Pseudo, strippedOption), padding)

@@ -397,6 +397,17 @@ func TestQueryPaddingBlockSize(t *testing.T) {
 			if out.UDPSize != ednsPayloadSize {
 				t.Errorf("UDPSize=%d: upstream query advertises %d, want %d", size, out.UDPSize, ednsPayloadSize)
 			}
+			// Client-chosen IDs can fingerprint devices; each upstream query
+			// gets a fresh one. Four draws rule out a chance collision.
+			leaked := true
+			for range 4 {
+				if out, _ := prepareOutboundQuery(q); out.ID != q.ID {
+					leaked = false
+				}
+			}
+			if leaked {
+				t.Errorf("UDPSize=%d: upstream queries reuse the client's ID %d", size, q.ID)
+			}
 			found := false
 			for _, rr := range out.Pseudo {
 				if _, ok := rr.(*dns.PADDING); ok {
