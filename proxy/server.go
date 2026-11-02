@@ -587,13 +587,20 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 	// from here on; dropping it also saves copying it into each clone.
 	m.Pseudo = slices.DeleteFunc(m.Pseudo, strippedOption)
 	m.Data = nil
-	// The cache expires a response with its shortest record TTL, so the
-	// floor applies to every section of a positive answer.
+	// A TTL with its most significant bit set means zero (RFC 2181, Section
+	// 8). The cache expires a response with its shortest record TTL, so the
+	// -minTTL floor applies to every section of a positive answer.
+	floor := uint32(0)
 	if s.minTTL > 0 && positiveAnswer(q, m) {
-		for _, section := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
-			for _, rr := range section {
-				rr.Header().TTL = max(rr.Header().TTL, uint32(s.minTTL))
+		floor = uint32(s.minTTL)
+	}
+	for _, section := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
+		for _, rr := range section {
+			h := rr.Header()
+			if h.TTL > uint32(maxTTL/time.Second) {
+				h.TTL = 0
 			}
+			h.TTL = max(h.TTL, floor)
 		}
 	}
 	s.cache.put(q, m)

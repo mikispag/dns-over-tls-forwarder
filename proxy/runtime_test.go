@@ -379,6 +379,25 @@ func TestMinTTLCoversWholeAnswer(t *testing.T) {
 	}
 }
 
+func TestHighBitTTLsAreZero(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	u := &pipeUpstream{respond: answerWith(dns.RcodeSuccess, "msb.test. 2147483648 IN A 192.0.2.1")}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	q := dns.NewMsg("msb.test.", dns.TypeA)
+	m := s.GetAnswer(context.Background(), q)
+	if m == nil || len(m.Answer) != 1 {
+		t.Fatalf("answer = %v", m)
+	}
+	// RFC 2181, Section 8: a TTL with the most significant bit set is zero.
+	if got := m.Answer[0].Header().TTL; got != 0 {
+		t.Errorf("forwarded TTL = %d, want 0", got)
+	}
+	if cached, _ := s.cache.get(q); cached != nil {
+		t.Error("zero-TTL answer was cached")
+	}
+}
+
 func TestQueryPaddingBlockSize(t *testing.T) {
 	for _, q := range []*dns.Msg{
 		dns.NewMsg("example.org.", dns.TypeA),
