@@ -15,14 +15,24 @@ Applications ── ordinary DNS over UDP/TCP ──► dns-over-tls-forwarder
                                                └── DNS over TLS ──► upstream resolvers
 ```
 
-## Try it locally
+## Install
 
-Requires **Go 1.27 or newer**, system CA certificates, and outbound TCP to your upstreams (normally port 853).
+Each [release](https://github.com/mikispag/dns-over-tls-forwarder/releases) provides static Linux binaries for amd64 and arm64, a `SHA256SUMS` file, and GitHub build provenance. To download and verify the amd64 archive:
 
 ```sh
-git clone https://github.com/mikispag/dns-over-tls-forwarder.git
-cd dns-over-tls-forwarder
-go build -o dns-over-tls-forwarder .
+gh release download --repo mikispag/dns-over-tls-forwarder --pattern '*linux_amd64.tar.gz' --pattern SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify dns-over-tls-forwarder_*_linux_amd64.tar.gz --repo mikispag/dns-over-tls-forwarder
+tar -xzf dns-over-tls-forwarder_*_linux_amd64.tar.gz --strip-components=1
+```
+
+Or build from source with **Go 1.27 or newer**: `go install github.com/mikispag/dns-over-tls-forwarder/v2@latest`.
+
+## Try it locally
+
+The forwarder needs system CA certificates and outbound TCP to your upstreams (normally port 853). Start it on an unprivileged port:
+
+```sh
 ./dns-over-tls-forwarder -a 127.0.0.1:5353 -metrics 9100
 ```
 
@@ -35,8 +45,6 @@ curl http://localhost:9100/metrics
 ```
 
 Both queries should return an answer, and repeating one increases `dns_cache_hits_total`. Your system resolver is untouched; to use the forwarder for all lookups, bind it to port 53 ([Running with systemd](#running-with-systemd)) and point your operating system or router at it.
-
-To install the binary instead: `go install github.com/mikispag/dns-over-tls-forwarder/v2@latest`.
 
 ## How it works
 
@@ -90,11 +98,11 @@ Combine upstreams with the same filtering policy: with one blocking and one unfi
 
 ## Running with systemd
 
-The [service unit](debian/dns-over-tls-forwarder.service) runs as a dynamic user holding only `CAP_NET_BIND_SERVICE`, under systemd sandboxing and a system call filter. It orders itself before `nss-lookup.target` and listens on loopback. To install it with metrics enabled:
+The [service unit](debian/dns-over-tls-forwarder.service) runs as a dynamic user holding only `CAP_NET_BIND_SERVICE`, under systemd sandboxing and a system call filter. It orders itself before `nss-lookup.target` and listens on loopback. To install it with metrics enabled from an extracted release archive (in the source tree, the unit is under `debian/`):
 
 ```sh
 sudo install -m 0755 dns-over-tls-forwarder /usr/local/bin/dns-over-tls-forwarder
-sudo install -m 0644 debian/dns-over-tls-forwarder.service /etc/systemd/system/dns-over-tls-forwarder.service
+sudo install -m 0644 dns-over-tls-forwarder.service /etc/systemd/system/dns-over-tls-forwarder.service
 sudo mkdir -p /etc/systemd/system/dns-over-tls-forwarder.service.d
 sudo tee /etc/systemd/system/dns-over-tls-forwarder.service.d/local.conf >/dev/null <<'EOF'
 [Service]
@@ -192,6 +200,8 @@ go test ./proxy -run '^$' -fuzz '^FuzzDNSMessageTransforms$' -fuzztime=30s
 ```
 
 Tests use local fake upstreams and need no network access. CI tests on Linux, macOS, and Windows with the latest and minimum Go versions, and runs lint, fuzz smoke tests, govulncheck, and CodeQL. Actions are pinned to commits and updated by Dependabot along with Go modules.
+
+Releases follow semantic versioning. Pushing a signed, annotated `vX.Y.Z` tag, whose message becomes the release notes, runs the release workflow: it builds reproducible archives, attests them, and publishes the release.
 
 Start with `main.go` for flags and process setup, `proxy/server.go` for forwarding and refreshes, `proxy/connpool.go` for connection reuse, and `proxy/cache.go` with `proxy/internal/specialized/` for caching.
 
