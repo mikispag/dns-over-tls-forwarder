@@ -30,6 +30,8 @@ jobs:
     name: Build (linux/${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
+      # Let every target finish, so a failure can be rerun on its own.
+      fail-fast: false
       matrix:
         # Servers, single-board computers, and common router SoCs. MIPS builds
         # use soft float: many router SoCs lack an FPU, and router kernels

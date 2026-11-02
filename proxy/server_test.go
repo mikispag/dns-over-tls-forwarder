@@ -604,6 +604,10 @@ func TestConcurrencyRace(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			c := dns.NewClient()
+			// The 50 misses queue for four pooled connections; under QEMU,
+			// release builds take longer than the default 2 s. This test
+			// checks for races, not latency.
+			c.ReadTimeout = 30 * time.Second
 			m := dns.NewMsg("test"+strconv.Itoa(i)+".com.", dns.TypeA)
 			_, _, err := c.Exchange(context.TODO(), m, "udp", actualProxyAddr)
 			if err != nil {
