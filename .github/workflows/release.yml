@@ -145,16 +145,15 @@ jobs:
       - name: Select archives
         run: |
           mkdir publish
-          : > old-sums
+          : > published
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "Release $TAG exists; adding missing archives only."
             gh release view "$TAG" --json assets --jq '.assets[].name' > published
             if grep -qxF SHA256SUMS published; then
               gh release download "$TAG" --pattern SHA256SUMS --output old-sums
             fi
-          else
-            : > published
           fi
+          touch old-sums
           for f in dist/*.tar.gz; do
             if ! grep -qxF "${f#dist/}" published; then
               mv "$f" publish/
