@@ -1,19 +1,29 @@
 name: release
 
 # Pushing a vX.Y.Z tag publishes a release whose notes are the annotated tag
-# message. A manual run builds and packages without publishing.
+# message. A manual run with a tag builds that tag's source and adds the
+# archives its release lacks, such as targets added later; published files
+# are never replaced. A manual run without a tag builds a snapshot only.
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to add missing archives to (empty for a snapshot build)
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag }}
   cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
 jobs:
   build:
@@ -41,8 +51,16 @@ jobs:
       GOMIPS: ${{ matrix.gomips }}
       GOMIPS64: ${{ matrix.gomips64 }}
     steps:
+      - name: Validate tag
+        if: env.TAG != ''
+        run: |
+          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a vX.Y.Z tag"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG || github.ref }}
           # Go stamps the module version from the tag, which needs history.
           fetch-depth: 0
           persist-credentials: false
@@ -64,11 +82,11 @@ jobs:
         run: go build -trimpath -ldflags='-s -w' -o dist/dns-over-tls-forwarder .
 
       - name: Check embedded version
-        if: github.ref_type == 'tag'
+        if: env.TAG != ''
         run: |
           got=$(go version -m dist/dns-over-tls-forwarder | awk '$1 == "mod" { print $3 }')
-          if [ "$got" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::binary reports version '$got', want '$GITHUB_REF_NAME'"
+          if [ "$got" != "$TAG" ]; then
+            echo "::error::binary reports version '$got', want '$TAG'"
             exit 1
           fi
 
@@ -76,10 +94,10 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            version=${GITHUB_REF_NAME#v}
+          if [ -n "$TAG" ]; then
+            version=${TAG#v}
           else
-            version=0.0.0-snapshot.${GITHUB_SHA::12}
+            version=0.0.0-snapshot.$(git rev-parse --short=12 HEAD)
           fi
           name=dns-over-tls-forwarder_${version}_linux_${ARCH}
           mkdir "dist/$name"
@@ -101,39 +119,75 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
       attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
 
+      # A new release publishes every archive. An existing one gains only the
+      # archives it lacks, and its SHA256SUMS keeps the published entries.
+      - name: Select archives
+        run: |
+          mkdir publish
+          : > old-sums
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists; adding missing archives only."
+            gh release view "$TAG" --json assets --jq '.assets[].name' > published
+            if grep -qxF SHA256SUMS published; then
+              gh release download "$TAG" --pattern SHA256SUMS --output old-sums
+            fi
+          else
+            : > published
+          fi
+          for f in dist/*.tar.gz; do
+            if ! grep -qxF "${f#dist/}" published; then
+              mv "$f" publish/
+            fi
+          done
+          ls -l publish
+
       - name: Checksums
-        working-directory: dist
-        run: sha256sum -- *.tar.gz | tee SHA256SUMS
+        run: |
+          if [ -n "$(ls publish)" ]; then
+            (cd publish && sha256sum -- *.tar.gz)
+          fi | cat old-sums - | sort -k2 | tee SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: hashFiles('publish/*.tar.gz') != ''
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: publish/*.tar.gz
 
       - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ -s published ] || gh release view "$TAG" > /dev/null 2>&1; then
+            if [ -z "$(ls publish)" ]; then
+              echo "Release $TAG already has every archive."
+              exit 0
+            fi
+            gh release upload "$TAG" publish/*.tar.gz
+            gh release upload "$TAG" SHA256SUMS --clobber
+            exit 0
+          fi
           # The checkout fetched the annotated tag; its body is the release notes.
-          git fetch --no-tags origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          git for-each-ref --format='%(contents:body)' "refs/tags/$GITHUB_REF_NAME" > notes.md
+          git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
+          git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > notes.md
           if [ ! -s notes.md ]; then
-            echo "::error::tag $GITHUB_REF_NAME has no release notes in its message"
+            echo "::error::tag $TAG has no release notes in its message"
             exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md dist/*.tar.gz dist/SHA256SUMS
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
+            publish/*.tar.gz SHA256SUMS
