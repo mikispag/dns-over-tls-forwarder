@@ -100,9 +100,24 @@ func (l *trackedListener) track(c net.Conn) (net.Conn, error) {
 // descriptor exhaustion or a client resetting before the handshake completed.
 func transientAcceptError(err error) bool {
 	var ne net.Error
-	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
-		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) ||
-		errors.Is(err, syscall.ECONNABORTED) || (errors.As(err, &ne) && ne.Timeout())
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	for _, errno := range transientAcceptErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
+}
+
+// transientAcceptErrnos are descriptor and memory exhaustion, plus network
+// errors that Linux reports from the accepted socket and accept(2) says to
+// retry. Go retries EINTR and ECONNABORTED itself on Unix.
+var transientAcceptErrnos = []syscall.Errno{
+	syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM,
+	syscall.ECONNABORTED, syscall.ECONNRESET, syscall.ENETDOWN, syscall.ENETUNREACH,
+	syscall.EHOSTDOWN, syscall.EHOSTUNREACH, syscall.EPROTO, syscall.ENOPROTOOPT, syscall.EOPNOTSUPP,
 }
 
 func (l *trackedListener) Close() error {

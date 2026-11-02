@@ -140,10 +140,13 @@ func TestTrackedListenerRetriesTransientErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failing := &failingListener{Listener: raw, errs: []error{
-		&net.OpError{Op: "accept", Err: os.NewSyscallError("accept", syscall.EMFILE)},
-		&net.OpError{Op: "accept", Err: os.NewSyscallError("accept", syscall.ECONNABORTED)},
-	}}
+	failing := &failingListener{}
+	// Descriptor exhaustion, and network errors Linux reports from the
+	// accepted socket (accept(2)).
+	for _, errno := range []syscall.Errno{syscall.EMFILE, syscall.ECONNABORTED, syscall.ECONNRESET, syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.EPROTO} {
+		failing.errs = append(failing.errs, &net.OpError{Op: "accept", Err: os.NewSyscallError("accept", errno)})
+	}
+	failing.Listener = raw
 	l := newTrackedListener(failing, maxTCPClients).(*trackedListener)
 	defer func() { _ = l.Close() }()
 	client, err := net.Dial("tcp", l.Addr().String())
