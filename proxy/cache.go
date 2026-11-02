@@ -201,9 +201,6 @@ func positiveAnswer(q, m *dns.Msg) bool {
 
 // key identifies a question and the header flags that select a response policy.
 // The type is explicit because the DNS library formats meta-type questions
-// without it, and names compare case-insensitively (RFC 4343).
-// key identifies a question and the header flags that select a response policy.
-// The type is explicit because the DNS library formats meta-type questions
 // without it, and names compare case-insensitively (RFC 4343). Only ASCII is
 // folded: strings.ToLower would replace invalid UTF-8 bytes and could make
 // distinct names collide. The key is built without fmt because every query
