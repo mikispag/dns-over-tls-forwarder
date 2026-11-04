@@ -616,10 +616,15 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 		if err == nil {
 			err = ctx.Err()
 		}
-		// Shutdown cancels lookups; that is no upstream failure.
-		if !errors.Is(err, context.Canceled) {
+		// Shutdown cancels lookups; that is no upstream failure. Query names
+		// are logged only with debug logging.
+		switch cause := strings.ReplaceAll(err.Error(), "\n", "; "); {
+		case errors.Is(err, context.Canceled):
+		case s.Log.GetLevel("debug"):
 			s.Log.Warnf("Upstream lookup for %s %s failed: %s", q.Question[0].Header().Name,
-				dnsutil.TypeToString(dns.RRToType(q.Question[0])), strings.ReplaceAll(err.Error(), "\n", "; "))
+				dnsutil.TypeToString(dns.RRToType(q.Question[0])), cause)
+		default:
+			s.Log.Warnf("Upstream lookup failed: %s", cause)
 		}
 		return nil
 	}

@@ -1082,25 +1082,34 @@ func TestStaleIdleConnectionDoesNotLoseToServfail(t *testing.T) {
 }
 
 func TestLookupFailureLogsCause(t *testing.T) {
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-	logger.EnableLevel("warn")
-	s := NewServer(nil, logger, 100, false, 0, "127.0.0.1:0", "127.0.0.1:853")
-	s.pools = []*pool{newPoolWithAddr(connectionsPerUpstream, "broken.test:853", func(context.Context) (net.Conn, error) {
-		return nil, errors.New("handshake refused")
-	})}
-	defer s.pools[0].shutdown()
-	if m := s.lookup(context.Background(), dns.NewMsg("fail.test.", dns.TypeAAAA)); m != nil {
-		t.Fatalf("lookup = %v, want failure", m)
-	}
-	got := buf.String()
-	for _, want := range []string{"fail.test. AAAA", "broken.test:853: handshake refused"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("log %q lacks %q", got, want)
-		}
-	}
-	if lines := strings.Count(got, "\n"); lines != 1 {
-		t.Errorf("log has %d lines, want 1: %q", lines, got)
+	for _, debug := range []bool{false, true} {
+		t.Run(fmt.Sprint(debug), func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := log.New(&buf, "", 0)
+			logger.EnableLevel("warn")
+			if debug {
+				logger.EnableLevel("debug")
+			}
+			s := NewServer(nil, logger, 100, false, 0, "127.0.0.1:0", "127.0.0.1:853")
+			s.pools = []*pool{newPoolWithAddr(connectionsPerUpstream, "broken.test:853", func(context.Context) (net.Conn, error) {
+				return nil, errors.New("handshake refused")
+			})}
+			defer s.pools[0].shutdown()
+			if m := s.lookup(context.Background(), dns.NewMsg("fail.test.", dns.TypeAAAA)); m != nil {
+				t.Fatalf("lookup = %v, want failure", m)
+			}
+			got := buf.String()
+			if !strings.Contains(got, "broken.test:853: handshake refused") {
+				t.Errorf("log %q lacks the upstream error", got)
+			}
+			// Query names are private unless debug logging is on.
+			if strings.Contains(got, "fail.test. AAAA") != debug {
+				t.Errorf("log %q: question shown = %t, want %t", got, !debug, debug)
+			}
+			if lines := strings.Count(got, "\n"); lines != 1 {
+				t.Errorf("log has %d lines, want 1: %q", lines, got)
+			}
+		})
 	}
 }
 
