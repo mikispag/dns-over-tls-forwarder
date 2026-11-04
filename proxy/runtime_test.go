@@ -1118,6 +1118,53 @@ func TestShutdownClosesIdleTCPClients(t *testing.T) {
 	checkRunExit(t, <-runDone)
 }
 
+func TestTCPReplyOutlastsIdleTimeout(t *testing.T) {
+	s := runtimeServer(testnet.DNSAddr(t))
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		time.Sleep(300 * time.Millisecond)
+		return answerWith(dns.RcodeSuccess, "slow.test. 300 IN A 192.0.2.1")(q)
+	}}
+	s.dial = u.dial
+	// The DNS library closes a connection after IdleTimeout without a new
+	// query, even while an earlier query is still being answered.
+	s.servers[0].IdleTimeout = 50 * time.Millisecond
+	runServer(t, s)
+	s.mu.RLock()
+	addr := s.servers[0].Addr
+	l := s.servers[0].Listener.(*trackedListener)
+	s.mu.RUnlock()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	r, _, err := dns.NewClient().ExchangeWithConn(context.Background(), dns.NewMsg("slow.test.", dns.TypeA), c)
+	if err != nil {
+		t.Fatalf("query outlasting the idle timeout failed: %v", err)
+	}
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 1 {
+		t.Fatalf("reply = %v", r)
+	}
+	// Once the reply is written, the idle connection closes and frees its slot.
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("read after reply: %v, want EOF", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		l.mu.Lock()
+		open := len(l.conns)
+		l.mu.Unlock()
+		if open == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("TCP connection not released")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestUnexpectedTCPListenerFailureIsReturned(t *testing.T) {
 	s := runtimeServer(testnet.DNSAddr(t))
 	ctx, cancel := context.WithCancel(context.Background())

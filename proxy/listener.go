@@ -15,7 +15,8 @@ const maxTCPClients = 256
 
 // trackedListener closes accepted TCP sockets and waits for their readers to
 // exit before the DNS library waits for handlers. The library closes each
-// accepted connection when its reader has finished starting handlers.
+// accepted connection when its reader stops; the socket and its slot are
+// released once pending replies are written.
 type trackedListener struct {
 	net.Listener
 	slots     chan struct{}
@@ -31,8 +32,13 @@ type trackedListener struct {
 
 type trackedConn struct {
 	net.Conn
-	listener *trackedListener
-	once     sync.Once
+	listener   *trackedListener
+	readerOnce sync.Once
+	closeOnce  sync.Once
+
+	mu         sync.Mutex
+	pending    int  // replies still being prepared
+	readerDone bool // the DNS library has closed the connection
 }
 
 func newTrackedListener(l net.Listener, maxConns int) net.Listener {
@@ -143,13 +149,45 @@ func (l *trackedListener) Close() error {
 	return l.closeErr
 }
 
+// Close is called by the DNS library when the connection's reader stops,
+// including after IdleTimeout without a new query. The library does not wait
+// for handlers, so the socket stays open until pending replies are written.
 func (c *trackedConn) Close() error {
+	c.readerOnce.Do(c.listener.readers.Done)
+	c.mu.Lock()
+	c.readerDone = true
+	idle := c.pending == 0
+	c.mu.Unlock()
+	if !idle {
+		return nil
+	}
+	return c.release()
+}
+
+// beginReply keeps c open until the matching endReply.
+func (c *trackedConn) beginReply() {
+	c.mu.Lock()
+	c.pending++
+	c.mu.Unlock()
+}
+
+func (c *trackedConn) endReply() {
+	c.mu.Lock()
+	c.pending--
+	idle := c.pending == 0 && c.readerDone
+	c.mu.Unlock()
+	if idle {
+		_ = c.release()
+	}
+}
+
+// release closes the socket and frees its slot.
+func (c *trackedConn) release() error {
 	err := c.Conn.Close()
-	c.once.Do(func() {
+	c.closeOnce.Do(func() {
 		c.listener.mu.Lock()
 		delete(c.listener.conns, c)
 		c.listener.mu.Unlock()
-		c.listener.readers.Done()
 		<-c.listener.slots
 	})
 	return err

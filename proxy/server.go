@@ -297,6 +297,11 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	if w.RemoteAddr() != nil && strings.HasPrefix(w.RemoteAddr().Network(), "tcp") {
 		network = "tcp"
 	}
+	if c, ok := w.Conn().(*trackedConn); ok {
+		// A TCP client may stop sending while a slow lookup is pending.
+		c.beginReply()
+		defer c.endReply()
+	}
 	var malformed bool
 	if q == nil {
 		q = new(dns.Msg)
