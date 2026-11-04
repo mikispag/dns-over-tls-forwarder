@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -595,14 +596,21 @@ func (s *Server) lookup(ctx context.Context, q *dns.Msg) *dns.Msg {
 		return nil
 	}
 	var m *dns.Msg
+	var err error
 	for attempt := 0; attempt < lookupAttempts && ctx.Err() == nil; attempt++ {
-		m = s.forwardMessageAndGetResponse(ctx, q)
-		if m != nil {
+		if m, err = s.forwardMessageAndGetResponse(ctx, q); m != nil {
 			break
 		}
 	}
 	if m == nil {
-		s.Log.Warn("DNS upstream resolution failed")
+		if err == nil {
+			err = ctx.Err()
+		}
+		// Shutdown cancels lookups; that is no upstream failure.
+		if !errors.Is(err, context.Canceled) {
+			s.Log.Warnf("Upstream lookup for %s %s failed: %s", q.Question[0].Header().Name,
+				dnsutil.TypeToString(dns.RRToType(q.Question[0])), strings.ReplaceAll(err.Error(), "\n", "; "))
+		}
 		return nil
 	}
 	// Upstream padding (RFC 7830) and other per-hop options must not be
@@ -652,43 +660,54 @@ func prepareOutboundQuery(q *dns.Msg) (*dns.Msg, error) {
 
 // forwardMessageAndGetResponse races q across the upstreams and returns the
 // first NOERROR or NXDOMAIN response, or another response if none arrives.
+// Without any response, it returns every upstream's error.
 // Losing exchanges finish in the background so their connections stay
 // pooled; Run waits for them through s.workers.
-func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) *dns.Msg {
+func (s *Server) forwardMessageAndGetResponse(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	resps := make(chan *dns.Msg, len(s.pools))
+	type reply struct {
+		m   *dns.Msg
+		err error
+	}
+	replies := make(chan reply, len(s.pools))
 	for _, p := range s.pools {
 		s.workers.Add(1)
 		go func(p *pool) {
 			defer s.workers.Done()
 			qc, err := prepareOutboundQuery(q)
 			if err != nil {
-				resps <- nil
+				replies <- reply{err: fmt.Errorf("encode query: %w", err)}
 				return
 			}
-			r, _ := s.exchangeMessages(ctx, p, qc)
-			resps <- r
+			m, err := s.exchangeMessages(ctx, p, qc)
+			if err != nil {
+				err = fmt.Errorf("%s: %w", p.addr, err)
+			}
+			replies <- reply{m, err}
 		}(p)
 	}
 	var fallback *dns.Msg
+	var errs []error
 	for range s.pools {
 		select {
 		case <-ctx.Done():
-			return nil
-		case r := <-resps:
-			if r == nil {
-				continue
-			}
-			if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
-				return r
-			}
-			if fallback == nil {
-				fallback = r
+			return nil, ctx.Err()
+		case r := <-replies:
+			switch {
+			case r.err != nil:
+				errs = append(errs, r.err)
+			case r.m.Rcode == dns.RcodeSuccess || r.m.Rcode == dns.RcodeNameError:
+				return r.m, nil
+			case fallback == nil:
+				fallback = r.m
 			}
 		}
 	}
-	return fallback
+	if fallback != nil {
+		return fallback, nil
+	}
+	return nil, errors.Join(errs...)
 }
 
 var errNilResponse = errors.New("nil response from upstream")
