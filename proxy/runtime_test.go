@@ -799,6 +799,45 @@ func TestPendingLookupsBounded(t *testing.T) {
 	}
 }
 
+func TestWaitingQueriesBounded(t *testing.T) {
+	s := runtimeServer("127.0.0.1:0")
+	release := make(chan struct{})
+	u := &pipeUpstream{respond: func(q *dns.Msg) *dns.Msg {
+		<-release
+		return answerWith(dns.RcodeSuccess, "flood.test. 300 IN A 192.0.2.1")(q)
+	}}
+	s.dial = u.dial
+	defer s.pools[0].shutdown()
+	s.waiting = make(chan struct{}, 1)
+	first := make(chan *dns.Msg, 1)
+	go func() { first <- s.GetAnswer(context.Background(), dns.NewMsg("flood.test.", dns.TypeA)) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(s.waiting) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first query never waited on its lookup")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Without the bound, this query would share the blocked lookup.
+	start := time.Now()
+	if m := s.GetAnswer(context.Background(), dns.NewMsg("flood.test.", dns.TypeA)); m != nil {
+		t.Fatal("query waited beyond the limit")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("rejected query took %v, want an immediate failure", elapsed)
+	}
+	if got := s.metrics.LookupsRejected.Load(); got != 1 {
+		t.Errorf("rejected lookups = %d, want 1", got)
+	}
+	close(release)
+	if m := <-first; m == nil {
+		t.Fatal("waiting query failed")
+	}
+	if len(s.waiting) != 0 {
+		t.Error("waiting slot not released")
+	}
+}
+
 func TestShutdownCancelsTLSHandshake(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

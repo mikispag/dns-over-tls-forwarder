@@ -161,7 +161,7 @@ func (s *Server) PrometheusHandler() http.Handler {
 		fmt.Fprintf(&buf, "# TYPE dns_singleflight_deduplications_total counter\n")
 		fmt.Fprintf(&buf, "dns_singleflight_deduplications_total %d\n\n", s.metrics.SingleflightDeduplicated.Load())
 
-		fmt.Fprintf(&buf, "# HELP dns_lookups_rejected_total Total cache misses failed immediately because too many upstream lookups were pending.\n")
+		fmt.Fprintf(&buf, "# HELP dns_lookups_rejected_total Total cache misses failed immediately because too many upstream lookups, or queries waiting on them, were pending.\n")
 		fmt.Fprintf(&buf, "# TYPE dns_lookups_rejected_total counter\n")
 		fmt.Fprintf(&buf, "dns_lookups_rejected_total %d\n\n", s.metrics.LookupsRejected.Load())
 

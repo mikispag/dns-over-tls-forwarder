@@ -35,6 +35,9 @@ const (
 	// maxPendingLookups bounds upstream lookups in flight; further cache
 	// misses fail immediately with SERVFAIL.
 	maxPendingLookups = 1024
+	// maxWaitingQueries bounds queries waiting for upstream lookups,
+	// including those sharing another query's lookup.
+	maxWaitingQueries = 2 * maxPendingLookups
 	// ednsPayloadSize is the advertised EDNS UDP payload size and the largest
 	// UDP reply (DNS Flag Day 2020).
 	ednsPayloadSize = 1232
@@ -47,6 +50,7 @@ type Server struct {
 	pools   []*pool
 	rq      chan *dns.Msg
 	lookups chan struct{} // slots for pending upstream lookups
+	waiting chan struct{} // slots for queries waiting on lookups
 	dial    func(context.Context, string, *tls.Config) (net.Conn, error)
 	minTTL  int
 
@@ -95,6 +99,7 @@ func NewServer(mux *dns.ServeMux, logger *log.Logger, cacheSize int, evictMetric
 		cache:   cache,
 		rq:      make(chan *dns.Msg, refreshQueueSize),
 		lookups: make(chan struct{}, maxPendingLookups),
+		waiting: make(chan struct{}, maxWaitingQueries),
 		dial: func(ctx context.Context, addr string, cfg *tls.Config) (net.Conn, error) {
 			dialer := tls.Dialer{Config: cfg}
 			return dialer.DialContext(ctx, "tcp", addr)
@@ -520,8 +525,21 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 	}
 	s.workers.Add(1)
 	s.mu.RUnlock()
+	// Each waiting query holds a handler goroutine and its buffers. lookup
+	// bounds distinct lookups; this also bounds queries sharing one.
+	select {
+	case s.waiting <- struct{}{}:
+	default:
+		s.workers.Done()
+		s.metrics.LookupsRejected.Add(1)
+		return nil
+	}
+	done := func() {
+		<-s.waiting
+		s.workers.Done()
+	}
 	if !cacheableQuery(q) {
-		defer s.workers.Done()
+		defer done()
 		lookupCtx, cancel := context.WithTimeout(ctx, connectionTimeout)
 		defer cancel()
 		return s.lookup(lookupCtx, q)
@@ -550,7 +568,7 @@ func (s *Server) forwardMessageAndCacheResponse(ctx context.Context, q *dns.Msg)
 		if result.Shared && !executed.Load() {
 			s.metrics.SingleflightDeduplicated.Add(1)
 		}
-		s.workers.Done()
+		done()
 	}
 	select {
 	case <-ctx.Done():

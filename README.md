@@ -139,7 +139,7 @@ curl http://localhost:9100/metrics
 The forwarder is meant for loopback or a trusted LAN. It has no client ACL or rate limiting: firewall a LAN listener to trusted hosts, and never expose it as a public resolver. Built-in limits keep a misbehaving client from exhausting resources:
 
 - At most 256 concurrent TCP clients; more wait in the kernel backlog.
-- At most 1,024 pending upstream lookups; further cache misses get `SERVFAIL` immediately.
+- At most 1,024 pending upstream lookups, and 2,048 queries waiting on them; further cache misses get `SERVFAIL` immediately.
 - Transient accept failures, such as running out of file descriptors, are retried rather than fatal.
 
 On Windows, bind an explicit address: wildcard listeners are rejected because replies could leave from the wrong source address.
@@ -172,7 +172,7 @@ scrape_configs:
 | `dns_cache_refreshes_completed_total` | Refresh attempts finished, successful or not. |
 | `dns_cache_refreshes_dropped_total` | Refreshes skipped because one was pending or the queue was full. |
 | `dns_singleflight_deduplications_total` | Queries that shared another query's lookup. |
-| `dns_lookups_rejected_total` | Cache misses failed immediately because too many lookups were pending. |
+| `dns_lookups_rejected_total` | Cache misses failed immediately because too many lookups, or queries waiting on them, were pending. |
 | `dns_cache_entries`, `dns_cache_capacity` | Current entries and maximum capacity. |
 | `dns_upstream_requests_total{upstream}`, `dns_upstream_errors_total{upstream}` | Exchange attempts, and transport or invalid-response failures. DNS errors such as `SERVFAIL` are not failures. |
 | `dns_upstream_duration_seconds_total{upstream}` | Time spent in upstream exchanges, including waiting for a connection. |
