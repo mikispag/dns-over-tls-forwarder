@@ -149,6 +149,8 @@ func validateListenAddress(addr, goos string) error {
 // unsupported ones itself and counts them. The DNS library's default policy
 // refuses RRSIG queries, which a forwarder must pass on, and answers some
 // errors before the handler sees them. Responses are dropped to avoid loops.
+// Packets whose header or question does not parse never get here: the
+// library drops them without a reply.
 func acceptRequest(m *dns.Msg) dns.MsgAcceptAction {
 	if m.Response {
 		return dns.MsgIgnore
