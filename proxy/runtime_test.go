@@ -190,9 +190,10 @@ func TestQueryAcceptancePolicy(t *testing.T) {
 		t.Errorf("RRSIG query: rcode %s, upstream dials %d; want it forwarded", dns.RcodeToString[r.Rcode], u.dials.Load())
 	}
 	empty := new(dns.Msg)
-	empty.ID = dns.ID()
-	if r := exchange(empty); r.Rcode != dns.RcodeFormatError {
-		t.Errorf("empty question: rcode %s, want FORMERR", dns.RcodeToString[r.Rcode])
+	empty.ID, empty.RecursionDesired = dns.ID(), true
+	if r := exchange(empty); r.Rcode != dns.RcodeFormatError || !r.RecursionDesired || !r.RecursionAvailable {
+		t.Errorf("empty question: rcode %s, RD %t, RA %t; want FORMERR, RD and RA",
+			dns.RcodeToString[r.Rcode], r.RecursionDesired, r.RecursionAvailable)
 	}
 	if got := s.metrics.QueriesFormErr.Load(); got != 1 {
 		t.Errorf("FORMERR responses counted = %d, want 1", got)
@@ -200,8 +201,9 @@ func TestQueryAcceptancePolicy(t *testing.T) {
 	for _, opcode := range []uint8{dns.OpcodeNotify, dns.OpcodeUpdate, dns.OpcodeStatus, dns.OpcodeIQuery} {
 		m := dns.NewMsg("zone.test.", dns.TypeSOA)
 		m.Opcode = opcode
-		if r := exchange(m); r.Rcode != dns.RcodeNotImplemented {
-			t.Errorf("opcode %s: rcode %s, want NOTIMP", dns.OpcodeToString[opcode], dns.RcodeToString[r.Rcode])
+		if r := exchange(m); r.Rcode != dns.RcodeNotImplemented || r.Opcode != opcode || !r.RecursionAvailable {
+			t.Errorf("opcode %s: rcode %s, opcode %s, RA %t; want NOTIMP echoing the opcode, with RA", dns.OpcodeToString[opcode],
+				dns.RcodeToString[r.Rcode], dns.OpcodeToString[r.Opcode], r.RecursionAvailable)
 		}
 	}
 	if got := u.dials.Load(); got != 1 {
@@ -1099,6 +1101,13 @@ func TestLookupFailureLogsCause(t *testing.T) {
 	}
 	if lines := strings.Count(got, "\n"); lines != 1 {
 		t.Errorf("log has %d lines, want 1: %q", lines, got)
+	}
+}
+
+func TestServfailOffersRecursion(t *testing.T) {
+	r := errorReply(dns.NewMsg("fail.test.", dns.TypeA), dns.RcodeServerFailure)
+	if r.Rcode != dns.RcodeServerFailure || !r.RecursionDesired || !r.RecursionAvailable {
+		t.Errorf("rcode %s, RD %t, RA %t; want SERVFAIL, RD and RA", dns.RcodeToString[r.Rcode], r.RecursionDesired, r.RecursionAvailable)
 	}
 }
 

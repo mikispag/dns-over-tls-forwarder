@@ -324,8 +324,7 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	}
 	var m *dns.Msg
 	if malformed {
-		m = &dns.Msg{}
-		m.ID, m.Response, m.Rcode = q.ID, true, dns.RcodeFormatError
+		m = headerReply(q, dns.RcodeFormatError)
 	} else if q.Opcode != dns.OpcodeQuery {
 		// Only standard queries are resolved; NOTIFY, UPDATE, and other
 		// opcodes would only fail upstream.
@@ -340,8 +339,7 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 	}
 	if err := packResponse(m, q, network); err != nil {
 		s.Log.Warnf("Unable to encode DNS response: %v", err)
-		m = new(dns.Msg)
-		m.ID, m.Response, m.Rcode = q.ID, true, dns.RcodeServerFailure
+		m = headerReply(q, dns.RcodeServerFailure)
 		if err := m.Pack(); err != nil {
 			return
 		}
@@ -359,8 +357,18 @@ func (s *Server) ServeDNS(ctx context.Context, w dns.ResponseWriter, q *dns.Msg)
 func errorReply(q *dns.Msg, rcode uint16) *dns.Msg {
 	m := new(dns.Msg)
 	dnsutil.SetReply(m, q)
-	m.Rcode = rcode
+	m.Rcode, m.RecursionAvailable = rcode, true
 	tailorResponse(m, q)
+	return m
+}
+
+// headerReply answers q, which may be malformed, from its header alone.
+// Like every local reply, it offers recursion, as upstream answers do.
+func headerReply(q *dns.Msg, rcode uint16) *dns.Msg {
+	m := new(dns.Msg)
+	m.ID, m.Opcode, m.Response, m.Rcode = q.ID, q.Opcode, true, rcode
+	m.RecursionDesired, m.CheckingDisabled = q.RecursionDesired, q.CheckingDisabled
+	m.RecursionAvailable = true
 	return m
 }
 
