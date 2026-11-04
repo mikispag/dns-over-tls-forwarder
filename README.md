@@ -174,7 +174,7 @@ scrape_configs:
 | `dns_singleflight_deduplications_total` | Queries that shared another query's lookup. |
 | `dns_lookups_rejected_total` | Cache misses failed immediately because too many lookups, or queries waiting on them, were pending. |
 | `dns_cache_entries`, `dns_cache_capacity` | Current entries and maximum capacity. |
-| `dns_upstream_requests_total{upstream}`, `dns_upstream_errors_total{upstream}` | Exchange attempts, and transport or invalid-response failures. DNS errors such as `SERVFAIL` are not failures. |
+| `dns_upstream_requests_total{upstream}`, `dns_upstream_errors_total{upstream}` | Exchanges, and those that failed in transport or with an invalid response. A retry after the resolver closed an idle connection is part of its exchange; DNS errors such as `SERVFAIL` are not failures. |
 | `dns_upstream_duration_seconds_total{upstream}` | Time spent in upstream exchanges, including waiting for a connection. |
 
 ## Cache behavior

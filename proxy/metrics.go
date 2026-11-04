@@ -169,7 +169,7 @@ func (s *Server) PrometheusHandler() http.Handler {
 		if len(s.metrics.upstreamStats) > 0 {
 			// Sorted labels keep scrapes stable and comparable.
 			upstreams := slices.Sorted(maps.Keys(s.metrics.upstreamStats))
-			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total upstream exchange attempts, including connection acquisition failures.\n")
+			fmt.Fprintf(&buf, "# HELP dns_upstream_requests_total Total upstream exchanges, including connection acquisition failures; a retry after an idle connection closed is part of its exchange.\n")
 			fmt.Fprintf(&buf, "# TYPE dns_upstream_requests_total counter\n")
 			for _, u := range upstreams {
 				fmt.Fprintf(&buf, "dns_upstream_requests_total{upstream=%q} %d\n", u, s.metrics.upstreamStats[u].requests.Load())

@@ -696,9 +696,19 @@ var errNilResponse = errors.New("nil response from upstream")
 // exchangeMessages sends q to one upstream. Resolvers close idle connections,
 // so a failure on a pooled connection is retried on another one; a freshly
 // dialed connection's failure is final.
-func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (*dns.Msg, error) {
+func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, err error) {
+	// Metrics count the exchange once, retries included.
+	start := time.Now()
+	defer func() {
+		metricsErr := err
+		if err != nil && p.ctx.Err() != nil {
+			metricsErr = context.Canceled
+		}
+		s.metrics.recordUpstream(p.addr, time.Since(start), metricsErr)
+	}()
 	for attempt := 0; ; attempt++ {
-		resp, reused, err := s.exchangeOnce(ctx, p, q)
+		var reused bool
+		resp, reused, err = s.exchangeOnce(ctx, p, q)
 		if err == nil || !reused || ctx.Err() != nil || attempt >= connectionsPerUpstream {
 			return resp, err
 		}
@@ -709,14 +719,6 @@ func (s *Server) exchangeMessages(ctx context.Context, p *pool, q *dns.Msg) (*dn
 // exchange even if ctx ends: reading the reply keeps the connection usable.
 // Deadlines bound the exchange, and pool shutdown closes the connection.
 func (s *Server) exchangeOnce(ctx context.Context, p *pool, q *dns.Msg) (resp *dns.Msg, reused bool, err error) {
-	start := time.Now()
-	defer func() {
-		metricsErr := err
-		if err != nil && p.ctx.Err() != nil {
-			metricsErr = context.Canceled
-		}
-		s.metrics.recordUpstream(p.addr, time.Since(start), metricsErr)
-	}()
 	c, reused, err := p.acquire(ctx)
 	if err != nil {
 		return nil, false, err

@@ -1069,6 +1069,13 @@ func TestStaleIdleConnectionDoesNotLoseToServfail(t *testing.T) {
 	if got := good.dials.Load(); got != 2 {
 		t.Errorf("healthy upstream dials = %d, want 2", got)
 	}
+	s.metrics.upstreamMu.Lock()
+	stats := s.metrics.upstreamStats["good"]
+	s.metrics.upstreamMu.Unlock()
+	// The retry after the resolver closed the idle connection is not a failure.
+	if exchanges, errs := stats.requests.Load(), stats.errors.Load(); exchanges != 2 || errs != 0 {
+		t.Errorf("healthy upstream exchanges = %d, errors = %d; want 2, 0", exchanges, errs)
+	}
 }
 
 func TestFreshConnectionFailureIsNotRetriedPerUpstream(t *testing.T) {
